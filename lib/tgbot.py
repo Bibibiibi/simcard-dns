@@ -386,13 +386,14 @@ def status_kb():
             [{"text": "« 返回", "callback_data": "menu:main"}]]
 
 
-def send_photo(chat_id, path, caption=""):
-    """Upload a local image via multipart/form-data (sendPhoto)."""
+def send_photo(chat_id, path, caption="", keyboard=None):
+    """Upload a local image via multipart/form-data (sendPhoto).
+    Returns the new message_id, or None when Telegram rejects the upload."""
     try:
         with open(path, "rb") as f:
             data = f.read()
     except OSError:
-        return False
+        return None
     boundary = "----pgwQRboundary8f3a2b"
 
     def _field(name, val):
@@ -402,6 +403,8 @@ def send_photo(chat_id, path, caption=""):
     body = _field("chat_id", str(chat_id))
     if caption:
         body += _field("caption", caption) + _field("parse_mode", "HTML")
+    if keyboard is not None:
+        body += _field("reply_markup", json.dumps({"inline_keyboard": keyboard}))
     body += ("--%s\r\nContent-Disposition: form-data; name=\"photo\"; "
              "filename=\"qr.png\"\r\nContent-Type: image/png\r\n\r\n" % boundary).encode("utf-8")
     body += data + b"\r\n" + ("--%s--\r\n" % boundary).encode("utf-8")
@@ -410,13 +413,16 @@ def send_photo(chat_id, path, caption=""):
         headers={"Content-Type": "multipart/form-data; boundary=%s" % boundary})
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read().decode("utf-8")).get("ok", False)
+            result = json.loads(resp.read().decode("utf-8"))
+            if result.get("ok"):
+                return (result.get("result") or {}).get("message_id")
+            return None
     except Exception as e:
         # Rare: TG API rejects the photo upload (size, format, transient 5xx).
         # The caller falls back to a text-only URL reply, but without this
         # log we'd have zero forensic trail for "why did the QR disappear?".
         print("[warn] send_photo failed: %s" % e, file=sys.stderr)
-        return False
+        return None
 
 
 def edit_message_media(cb, photo_path, caption="", keyboard=None):
@@ -1513,8 +1519,12 @@ def op_ios_send(chat_id):
 
 
 def op_ios_send_inline(cb):
-    """Edit the callback message in-place to show the iOS QR code.
-    Returns an error string on failure, or None on success."""
+    """Send the iOS QR as a fresh, short-lived photo message.
+
+    Do not convert the old console message into media: Telegram retains its
+    original timestamp when editing, so a console that is over 48 hours old
+    cannot be deleted on the way back. The fresh photo carries a callback that
+    deletes only itself, leaving the original menu in place."""
     domain = _read_file("/etc/mosdns/.domain") or _read_file("/opt/5gpn/etc/.domain")
     if domain:
         url = "http://%s:8111/ios-dot.mobileconfig" % domain
@@ -1527,8 +1537,13 @@ def op_ios_send_inline(cb):
     os.close(fd)
     try:
         ok, _ = run2(["qrencode", "-o", png, "-s", "8", "-m", "2", url], timeout=15)
-        if ok and edit_message_media(cb, png, cap, back_kb("menu:main")):
-            return None  # success: edited in-place
+        if ok:
+            source_mid = cb.get("message", {}).get("message_id")
+            photo_mid = send_photo(
+                cb.get("message", {}).get("chat", {}).get("id"), png, cap,
+                back_kb("ios_back:%s" % source_mid))
+            if photo_mid is not None:
+                return None  # delivered as a fresh photo; source menu is untouched
     finally:
         try:
             os.unlink(png)
@@ -1894,6 +1909,18 @@ def handle_callback(cb):
     elif data == "cancel:dot":
         PENDING.pop(chat_id, None)
         edit(cb, op_dot_status(), dot_menu())
+    elif data.startswith("ios_back:"):
+        # Use the existing credential-message deletion helper. A QR left open
+        # for over 48 hours (or an API failure) still needs a manual cleanup.
+        if not delete_message(chat_id, cb_mid):
+            tg("answerCallbackQuery", callback_query_id=cb_id,
+               text="未能删除二维码消息，请手动删除；原主页仍可使用。", show_alert=True)
+        try:
+            source_mid = int(data.split(":", 1)[1])
+        except (TypeError, ValueError):
+            source_mid = None
+        if source_mid is not None:
+            CONSOLE[chat_id] = source_mid
     elif data == "menu:main":
         PENDING.pop(chat_id, None)
         edit(cb, "选择一个操作：", main_menu())
@@ -2110,7 +2137,9 @@ def handle_callback(cb):
         edit(cb, "⏳ 正在删除出口 <b>%s</b>…" % html.escape(name))
         edit_async(cb, lambda: op_del_exit(name), back_kb("menu:exits"))
     elif data == "act:ios":
-        edit(cb, "⏳ 正在生成 iOS 二维码…")
+        # Keep the existing menu message intact. A long-idle menu may be older
+        # than Telegram's 48-hour delete window; the QR is sent separately and
+        # its own fresh Back callback deletes only that QR message.
         edit_ios_async(cb, chat_id)
     elif data.startswith("pol:"):
         try:
