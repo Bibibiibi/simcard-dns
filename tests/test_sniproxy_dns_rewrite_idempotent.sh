@@ -6,11 +6,11 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "${tmp}"' EXIT
 
 mkdir -p "${tmp}/bin"
-cat > "${tmp}/systemctl" <<'EOF'
+cat > "${tmp}/bin/systemctl" <<'EOF'
 #!/usr/bin/env bash
 exit 0
 EOF
-chmod +x "${tmp}/systemctl"
+chmod +x "${tmp}/bin/systemctl"
 
 mkdir -p "${tmp}/etc/mosdns" "${tmp}/opt/etc"
 cat > "${tmp}/sniproxy.conf" <<'EOF'
@@ -43,7 +43,7 @@ sed_redirect() {
   sed \
     -e "s#/etc/sniproxy.conf#${tmp}/sniproxy.conf#g" \
     -e "s#/etc/mosdns#${tmp}/etc/mosdns#g" \
-    -e "s#/opt/5gpn/etc#${tmp}/opt/etc#g" \
+    -e "s#/opt/5gpn#${tmp}/opt#g" \
     -e "s#/usr/local/bin/update-mosdns-rules.sh#${tmp}/update-mosdns-rules.sh#g" \
     -e "s#/var/lib/5gpn-quic#${tmp}/var/lib/5gpn-quic#g" \
     "$1"
@@ -59,11 +59,9 @@ done
 sed_redirect "${root}/install.sh" > "${script}"
 chmod +x "${script}"
 
-# G5PNX_BOOTSTRAPPED prevents the wrapper (which lives outside the repo and has
-# no lib/) from re-execing a freshly downloaded install.sh: that pristine copy
-# would ignore every sed-redirected path above and write to the REAL host
-# config (/etc/mosdns, systemctl restart mosdns, ...).
-export G5PNX_BOOTSTRAPPED=1
+# The temporary lib/ tree keeps this wrapper self-contained; no bootstrap
+# download is needed. Isolate the routing lock as well as runtime paths.
+export PGW_ROUTING_LOCK_FILE="${tmp}/routing.lock"
 PATH="${tmp}/bin:${PATH}" bash "${script}" --set-dns \
   "1.1.1.1 8.8.8.8 9.9.9.9" \
   "101.226.4.6 218.30.118.6 180.76.76.76 119.29.29.29"

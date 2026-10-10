@@ -30,6 +30,13 @@ valid_domain() {
     [[ "${1:-}" =~ ^[A-Za-z0-9]([A-Za-z0-9_-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9_-]*[A-Za-z0-9])?)+$ ]]
 }
 
+# mosdns domain_set accepts a bare label as a suffix (for example, `cn` or
+# `xn--fiqs8s`). Keep the stricter dotted-domain validator for user-facing
+# overrides and local extras; only the upstream ChinaList cache gets this form.
+valid_chinalist_domain() {
+    [[ "${1:-}" =~ ^[A-Za-z0-9]([A-Za-z0-9_-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9_-]*[A-Za-z0-9])?)*$ ]]
+}
+
 append_local_gfwlist_extras() {
     [[ -f "$GFWLIST_EXTRA_FILE" ]] || return 0
     local domain
@@ -248,16 +255,20 @@ PYPATH
 # Validate both newly parsed sets and fallback caches; empty/HTML-only data is not usable.
 valid_domain_cache() {
     [[ -s "$1" ]] || return 1
-    local line count=0
+    local file="$1" validator="${2:-valid_domain}" line line_number=0 count=0
     while IFS= read -r line || [[ -n "$line" ]]; do
-        valid_domain "$line" || return 1
+        line_number=$((line_number + 1))
+        if ! "$validator" "$line"; then
+            echo "[!] Invalid domain cache entry at line ${line_number}" >&2
+            return 1
+        fi
         count=$((count + 1))
-    done < "$1"
+    done < "$file"
     (( count > 0 ))
 }
 
 update_domain_cache() {
-    local label="$1" url="$2" raw_var="$3" file_var="$4" parser="$5"
+    local label="$1" url="$2" raw_var="$3" file_var="$4" parser="$5" validator="${6:-valid_domain}"
     local raw="${!raw_var}" file="${!file_var}" work
     work=$(mktemp -d "${file}.update.XXXXXX") || return 1
     # A subshell redirects parser globals without touching live caches.
@@ -266,14 +277,14 @@ update_domain_cache() {
         printf -v "$raw_var" '%s' "$work/raw"
         printf -v "$file_var" '%s' "$work/domains"
         "$parser"
-    ) && valid_domain_cache "$work/domains"; then
+    ) && valid_domain_cache "$work/domains" "$validator"; then
         mv -f "$work/domains" "$file" || { rm -rf "$work"; return 1; }
         mv -f "$work/raw" "$raw" || { rm -rf "$work"; return 1; }
         rm -rf "$work"
         return 0
     fi
     rm -rf "$work"
-    if valid_domain_cache "$file"; then
+    if valid_domain_cache "$file" "$validator"; then
         echo "[!] $label download/parse failed; keeping valid previous domain set" >&2
         return 0
     fi
@@ -336,14 +347,14 @@ MOSDNS_TEMPLATE="$stage/config.yaml.template"; MOSDNS_CONF="$stage/config.yaml"
 dns_stage="domain-cache"
 if [[ -z "$mode" ]]; then
     update_domain_cache GFWList "$GFWLIST_URL" GFWLIST_RAW GFWLIST_FILE parse_gfwlist
-    update_domain_cache ChinaList "$CHINALIST_URL" CHINALIST_RAW CHINALIST_FILE parse_chinalist
+    update_domain_cache ChinaList "$CHINALIST_URL" CHINALIST_RAW CHINALIST_FILE parse_chinalist valid_chinalist_domain
     append_default_rule_domains
 else
     if ! valid_domain_cache "$GFWLIST_FILE"; then
         echo "[!] Offline GFWList cache is missing or invalid: $live/gfwlist.txt" >&2
         exit 1
     fi
-    if ! valid_domain_cache "$CHINALIST_FILE"; then
+    if ! valid_domain_cache "$CHINALIST_FILE" valid_chinalist_domain; then
         echo "[!] Offline ChinaList cache is missing or invalid: $live/chinalist.txt" >&2
         exit 1
     fi
