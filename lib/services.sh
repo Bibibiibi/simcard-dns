@@ -338,7 +338,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/opt/5gpn/bin/quic-proxy -l 0.0.0.0:443
+ExecStart=/opt/5gpn/bin/quic-proxy -l 0.0.0.0:443 -dns-file /var/lib/5gpn-quic/remote-dns
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5
@@ -364,6 +364,7 @@ install_mosdns() {
     chmod +x /usr/local/bin/update-mosdns-rules.sh
     echo "$DOMAIN" > /etc/mosdns/.domain
     echo "$PUBLIC_IP" > /etc/mosdns/.public_ip
+    write_quic_dns_file "$REMOTE_DNS" || return $?
     echo "$REMOTE_DNS" > /etc/mosdns/.remote_dns
     echo "$LOCAL_DNS" > /etc/mosdns/.local_dns
     echo "$REMOTE_DNS" > /etc/mosdns/.overseas_dns

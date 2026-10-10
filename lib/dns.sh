@@ -74,30 +74,8 @@ normalize_dns_upstreams() {
     for item in "${dns_list[@]}"; do
         [[ -z "$item" ]] && continue
         if [[ "$item" == *://* ]]; then
-            python3 - "$item" <<'PYEOF' || { err "Invalid DNS upstream URL: $item"; exit 1; }
-import ipaddress
-import sys
-from urllib.parse import urlsplit
-
-value = sys.argv[1]
-parsed = urlsplit(value)
-if parsed.scheme not in {"https", "tls", "udp", "tcp"}:
-    raise SystemExit(1)
-if not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
-    raise SystemExit(1)
-try:
-    ipaddress.ip_address(parsed.hostname)
-except ValueError:
-    raise SystemExit(1)
-if parsed.port is not None and not 1 <= parsed.port <= 65535:
-    raise SystemExit(1)
-if parsed.scheme == "https" and parsed.path != "/dns-query":
-    raise SystemExit(1)
-if parsed.scheme != "https" and parsed.path not in {"", "/"}:
-    raise SystemExit(1)
-PYEOF
-            out+=("$item")
-            continue
+            err "Encrypted or scheme DNS upstreams are unsupported by all consumers; use an IP address or IP:53: $item"
+            exit 1
         fi
         if [[ "$item" == *:* ]]; then
             if python3 - "$item" <<'PYEOF' >/dev/null 2>&1
@@ -115,7 +93,7 @@ PYEOF
             host="$item"
             port="53"
         fi
-        [[ "$port" =~ ^[0-9]+$ && "$port" -ge 1 && "$port" -le 65535 ]] || { err "Invalid DNS upstream port: $item"; exit 1; }
+        [[ "$port" =~ ^[0-9]+$ && "$port" -eq 53 ]] || { err "DNS upstream custom ports are unsupported by sniproxy/quic-proxy; use IP or IP:53: $item"; exit 1; }
         python3 - "$host" <<'PYEOF' || { err "Invalid DNS upstream IP: $item"; exit 1; }
 import ipaddress
 import sys
@@ -199,7 +177,22 @@ configure_dns_upstreams() {
 
 configure_overseas_dns() { configure_dns_upstreams; }
 
+write_quic_dns_file() {
+    local value="${1:-}"
+    [[ -n "$value" ]] || return 1
+    local dir=/var/lib/5gpn-quic path=/var/lib/5gpn-quic/remote-dns tmp
+    # Keep the non-secret resolver snapshot in a dedicated readable directory;
+    # do not relax /etc/5gpn permissions, which also contains exit credentials.
+    install -d -o root -g root -m 0755 "$dir" || return 1
+    path="$dir/remote-dns"
+    tmp="$(mktemp "$dir/.remote-dns.XXXXXX")" || return 1
+    printf '%s\n' "$value" > "$tmp" || { rm -f "$tmp"; return 1; }
+    chmod 0644 "$tmp" || { rm -f "$tmp"; return 1; }
+    mv -f "$tmp" "$path"
+}
+
 set_custom_dns() {
+    routing_lock
     local remote_dns local_dns backup_dir sniproxy_backup=""
     [[ -n "${1:-}" ]] || { err "Usage: $0 --set-dns <remote-dns> [local-dns]"; exit 1; }
     remote_dns=$(normalize_dns_upstreams "$1")
@@ -219,7 +212,8 @@ set_custom_dns() {
         /etc/mosdns/.overseas_dns \
         /etc/mosdns/.overseas_private_dns \
         /etc/mosdns/.overseas_public_dns \
-        /etc/mosdns/.sniproxy_dns; do
+        /etc/mosdns/.sniproxy_dns \
+            /var/lib/5gpn-quic/remote-dns; do
         [[ -f "$f" ]] && cp -a "$f" "${backup_dir}/${f//\//__}"
     done
     if [[ -f /etc/sniproxy.conf ]]; then
@@ -241,7 +235,8 @@ set_custom_dns() {
             /etc/mosdns/.overseas_dns \
             /etc/mosdns/.overseas_private_dns \
             /etc/mosdns/.overseas_public_dns \
-            /etc/mosdns/.sniproxy_dns; do
+            /etc/mosdns/.sniproxy_dns \
+            /var/lib/5gpn-quic/remote-dns; do
             b="${backup_dir}/${f//\//__}"
             if [[ -f "$b" ]]; then
                 cp -a "$b" "$f"
@@ -253,6 +248,14 @@ set_custom_dns() {
             cp -a "$sniproxy_backup" /etc/sniproxy.conf
         fi
     }
+    # Create the QUIC snapshot before changing any live DNS inputs. A
+    # permission or filesystem failure therefore leaves the old transaction
+    # untouched and can be reported without partial publication.
+    if ! write_quic_dns_file "$remote_dns"; then
+        rm -rf "$backup_dir"
+        err "Unable to publish QUIC DNS snapshot; DNS upstreams were not changed"
+        exit 1
+    fi
     echo "$remote_dns" > "${CONF_DIR}/.remote_dns"
     echo "$local_dns" > "${CONF_DIR}/.local_dns"
     echo "$remote_dns" > "${CONF_DIR}/.overseas_dns"

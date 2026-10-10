@@ -77,8 +77,11 @@ RESTART_SERVICES = [
 EXIT_NAME_RE = re.compile(r"^(local|[\w\-\u4e00-\u9fff]{1,16})$", re.UNICODE)
 EXIT_ADD_NAME_RE = re.compile(r"^[\w\-\u4e00-\u9fff]{1,16}$", re.UNICODE)  # 'local' is reserved
 DOMAIN_RE = re.compile(r"^(?=.{1,253}$)([A-Za-z0-9]([A-Za-z0-9_-]*[A-Za-z0-9])?\.)+[A-Za-z]{2,}$")
-DNS_LIST_RE = re.compile(r"^[0-9A-Fa-f:.,\s]+$")
-DNS_UPSTREAM_SCHEMES = {"https", "tls", "udp", "tcp"}
+DNS_LIST_RE = re.compile(r"^[0-9A-Fa-f:.\[\],\s]+$")
+# All runtime DNS consumers (mosdns, sniproxy and quic-proxy) use plain
+# IP[:53] upstreams. Reject schemes here instead of accepting values that
+# would later be rejected or silently interpreted differently by the CLI.
+DNS_UPSTREAM_SCHEMES = set()
 WWW_DIR = "/opt/5gpn/www"
 
 # Per-chat conversational state for multi-step flows (e.g. add-exit).
@@ -1275,27 +1278,28 @@ def _dns_arg(text):
     if not value:
         return ""
     items = value.replace(",", " ").split()
+    normalized = []
     for item in items:
-        if "://" not in item:
-            if not DNS_LIST_RE.fullmatch(item):
+        candidate = item
+        if candidate.startswith("["):
+            if not candidate.endswith("]") and "]:" not in candidate:
                 return ""
-            continue
+            end = candidate.find("]")
+            host = candidate[1:end]
+            port_text = candidate[end + 2:] if candidate[end:end + 2] == "]:" else "53"
+        else:
+            host, sep, port_text = candidate.rpartition(":")
+            if not sep or ":" in host:
+                host, port_text = candidate, "53"
         try:
-            parsed = urlparse(item)
-            ipaddress.ip_address(parsed.hostname or "")
-            port = parsed.port
+            ip = ipaddress.ip_address(host)
+            port = int(port_text)
         except (ValueError, TypeError):
             return ""
-        if (parsed.scheme not in DNS_UPSTREAM_SCHEMES or parsed.username or
-                parsed.password or parsed.query or parsed.fragment or
-                (port is not None and not 1 <= port <= 65535)):
+        if port != 53:
             return ""
-        if parsed.scheme == "https":
-            if parsed.path != "/dns-query":
-                return ""
-        elif parsed.path not in ("", "/"):
-            return ""
-    return " ".join(items)
+        normalized.append(str(ip) if ":" not in candidate or candidate.startswith("[") else candidate)
+    return " ".join(normalized)
 
 
 def current_remote_dns():
@@ -1310,8 +1314,7 @@ def current_local_dns():
 def op_set_dns(kind, text):
     dns = _dns_arg(text)
     if not dns:
-        return ("DNS 格式无效。支持 IP[:端口]，或 https://IP/dns-query、"
-                "tls://IP:853、udp://IP:53、tcp://IP:53；多个地址用空格或逗号分隔。")
+        return "DNS 格式无效。支持 IP 或 IP:53；多个地址用空格或逗号分隔。"
     if kind == "remote":
         remote_dns = dns
         local_dns = current_local_dns()

@@ -284,7 +284,7 @@ def main():
     if remote_dns:
         config["sniffer"] = {"enable": True, "force-dns-mapping": True, "parse-pure-ip": True,
                              "override-destination": True,
-                             "sniff": {"TLS": {"ports": [443, 8443]}, "HTTP": {"ports": [80, "8080-8880"]}}}
+                             "sniff": {"QUIC": {"ports": [443, 8443]}, "TLS": {"ports": [443, 8443]}, "HTTP": {"ports": [80, "8080-8880"]}}}
     sys.stdout.write(json.dumps(config, indent=2, ensure_ascii=False) + "\n")
 
 

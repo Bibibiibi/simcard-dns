@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/hex"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -52,5 +54,64 @@ func TestExtractSNIDoesNotMutateInitialPacket(t *testing.T) {
 	}
 	if !bytes.Equal(packet, original) {
 		t.Fatalf("extractSNI mutated the packet")
+	}
+}
+
+func TestConfiguredDNS(t *testing.T) {
+	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	go func() {
+		buf := make([]byte, 1500)
+		for {
+			n, peer, err := conn.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			if n < 12 {
+				continue
+			}
+			end := 12
+			for end < n && buf[end] != 0 {
+				end += int(buf[end]) + 1
+			}
+			if end+5 > n {
+				continue
+			}
+			end += 5
+			response := append([]byte(nil), buf[:end]...)
+			response[2], response[3] = 0x81, 0x80
+			response[6], response[7] = 0, 1
+			response[8], response[9], response[10], response[11] = 0, 0, 0, 0
+			response = append(response, 0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 203, 0, 113, 9)
+			_, _ = conn.WriteTo(response, peer)
+		}
+	}()
+	path := filepath.Join(t.TempDir(), "remote_dns")
+	dead, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadAddr := dead.LocalAddr().String()
+	dead.Close()
+	if err := os.WriteFile(path, []byte(deadAddr+" "+conn.LocalAddr().String()), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ips, err := lookupBackendIPv4("routing-test.invalid", path)
+	if err != nil || len(ips) != 1 || ips[0].String() != "203.0.113.9" {
+		t.Fatalf("ips=%v err=%v", ips, err)
+	}
+	for _, invalid := range []string{"", "localhost:53", "https://127.0.0.1/dns-query", "tls://1.1.1.1", "127.0.0.1:65536"} {
+		if err := os.WriteFile(path, []byte(invalid), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := lookupBackendIPv4("localhost", path); err == nil {
+			t.Errorf("accepted unsupported endpoint %q", invalid)
+		}
+	}
+	if _, err := lookupBackendIPv4("localhost", path+".absent"); err == nil {
+		t.Fatal("missing file must not use system resolver")
 	}
 }

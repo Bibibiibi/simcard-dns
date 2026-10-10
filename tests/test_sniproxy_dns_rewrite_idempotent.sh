@@ -45,6 +45,7 @@ sed_redirect() {
     -e "s#/etc/mosdns#${tmp}/etc/mosdns#g" \
     -e "s#/opt/5gpn/etc#${tmp}/opt/etc#g" \
     -e "s#/usr/local/bin/update-mosdns-rules.sh#${tmp}/update-mosdns-rules.sh#g" \
+    -e "s#/var/lib/5gpn-quic#${tmp}/var/lib/5gpn-quic#g" \
     "$1"
 }
 for _m in "${root}"/lib/*; do

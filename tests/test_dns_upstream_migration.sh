@@ -43,11 +43,16 @@ configure_dns_upstreams </dev/null
 [[ "$REMOTE_DNS" == "1.0.0.1 8.8.4.4" ]] || fail "explicit international DNS was changed"
 [[ "$LOCAL_DNS" == "180.76.76.76 114.114.114.114" ]] || fail "explicit domestic DNS was changed"
 
-# 4. DoH URLs are still accepted and validated.
-REMOTE_DNS="https://1.1.1.1/dns-query"
-LOCAL_DNS="https://223.5.5.5/dns-query"
-configure_dns_upstreams </dev/null
-[[ "$REMOTE_DNS" == "https://1.1.1.1/dns-query" ]] || fail "DoH URL not preserved (got: $REMOTE_DNS)"
+# 4. All consumers use plain IP/UDP DNS; encrypted schemes fail before writes.
+if (normalize_dns_upstreams "https://1.1.1.1/dns-query") >/dev/null 2>&1; then
+    fail "unsupported DoH URL was accepted"
+fi
+if (normalize_dns_upstreams "tls://1.1.1.1") >/dev/null 2>&1; then
+    fail "unsupported DoT URL was accepted"
+fi
+if (normalize_dns_upstreams "1.1.1.1:5353") >/dev/null 2>&1; then
+    fail "unsupported custom DNS port was accepted"
+fi
 
 # 5. Malformed URLs must fail closed.
 if (normalize_dns_upstreams "https://example.com/not-dns-query") >/dev/null 2>&1; then

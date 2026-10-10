@@ -5,7 +5,6 @@ import ipaddress
 import json
 import os
 import re
-import shutil
 import sys
 from urllib.parse import urldefrag
 
@@ -130,6 +129,29 @@ def parse_classical_rules(text):
     return list(dict.fromkeys(payload))
 
 
+def cache_content(content, suffix):
+    # Published configs retain immutable snapshots even if their source changes.
+    path = os.path.join(CACHE_DIR, hashlib.sha256(content).hexdigest() + suffix)
+    if not os.path.exists(path):
+        tmp = path + ".tmp.%s" % os.getpid()
+        try:
+            with open(tmp, "wb") as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            try:
+                os.rename(tmp, path)
+            except FileExistsError:
+                os.unlink(tmp)
+        finally:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+    with open(path, "rb") as handle:
+        if handle.read() != content:
+            die("rule-set cache content mismatch: " + path)
+    return path
+
+
 def main():
     if len(sys.argv) != 2:
         die("usage: mihomo-router-config.py <rules-file>")
@@ -204,8 +226,9 @@ def main():
                 die("local rule-set not found: %s" % source)
             os.makedirs(CACHE_DIR, exist_ok=True)
             if source.lower().endswith(".mrs"):
-                cached = os.path.join(CACHE_DIR, tag + ".mrs")
-                shutil.copyfile(source, cached)
+                with open(source, "rb") as handle:
+                    content = handle.read()
+                cached = cache_content(content, ".mrs")
                 behavior = behavior_hint or ("ipcidr" if any(word in source.lower() for word in ("geoip", "ipcidr", "ip-set")) else "domain")
                 if behavior == "classical":
                     die("mihomo .mrs providers support domain or ipcidr behavior, not classical")
@@ -215,9 +238,8 @@ def main():
                     payload = parse_classical_rules(handle.read())
                 if not payload:
                     die("local rule-set produced no supported rules: %s" % source)
-                cached = os.path.join(CACHE_DIR, tag + ".json")
-                with open(cached, "w", encoding="utf-8") as handle:
-                    json.dump({"payload": payload}, handle, ensure_ascii=False, indent=2)
+                content = json.dumps({"payload": payload}, ensure_ascii=False, indent=2).encode()
+                cached = cache_content(content, ".json")
                 providers[tag] = {"type": "file", "behavior": "classical", "format": "yaml", "path": cached}
         rules.append("RULE-SET,%s,%s" % (tag, policy))
 
@@ -257,7 +279,7 @@ def main():
                       "strict-route": False, "mtu": mtu},
               "sniffer": {"enable": True, "force-dns-mapping": True, "parse-pure-ip": True,
                           "override-destination": True,
-                          "sniff": {"TLS": {"ports": [443, 8443]}, "HTTP": {"ports": [80, "8080-8880"]}}},
+                          "sniff": {"QUIC": {"ports": [443, 8443]}, "TLS": {"ports": [443, 8443]}, "HTTP": {"ports": [80, "8080-8880"]}}},
               "proxies": proxies, "rule-providers": providers, "rules": rules}
     sys.stdout.write(json.dumps(config, indent=2, ensure_ascii=False) + "\n")
 

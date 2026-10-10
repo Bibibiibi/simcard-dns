@@ -11,7 +11,7 @@
 - 内网来源非 ChinaList 的 A 查询返回服务器 IP，流量进入 TCP/QUIC 代理。
 - 其他来源：被墙域名不劫持，正常海外解析；其他域名也正常海外解析。
 - wa-shim / sniproxy / quic-proxy 负责 WhatsApp Noise、SNI/Host 和 QUIC 转发，出站由当前出口控制。
-- 仅 `172.22.0.0/16` 内网来源的 AAAA 查询返回 NOERROR/NODATA；其他来源保留正常 IPv6 解析。
+- 所有来源的 AAAA 查询返回 NOERROR/NODATA，保持现有 IPv4-only 透明代理策略，避免 IPv6 绕过代理。
 - 国内 DNS 三层 fallback：UDP 竞速（4 路）→ 150ms 超时后 TCP 竞速 → 都不通时海外兜底（1.1.1.1、8.8.8.8、22.22.22.22）。国际 DNS primary/secondary fallback。
 
 支持的出口：本机直出、WireGuard、SOCKS5/SOCKS5H、SS/SS2022、VMess、Trojan、VLESS、Hysteria2、TUIC、AnyTLS、HTTP/HTTPS。URI 类出口由锁定版 mihomo `1.19.28` 提供 TUN 出口和智能分流。
@@ -20,7 +20,7 @@
 
 ## 主要功能
 
-- 加密 DNS：客户端统一通过 DoT 853 接入；mosdns 不监听本机 53，因此不会与 `systemd-resolved` 冲突。来源 IP 按段区分解析策略，海外 DNS 池 `1.1.1.1`、`8.8.8.8`、`9.9.9.9`，ChinaList 查询携带 ECS `139.226.48.0/24`；仅内网来源过滤 AAAA。
+- 加密 DNS：客户端统一通过 DoT 853 接入；mosdns 不监听本机 53，因此不会与 `systemd-resolved` 冲突。来源 IP 按段区分解析策略，海外 DNS 池 `1.1.1.1`、`8.8.8.8`、`9.9.9.9`，ChinaList 查询携带 ECS `139.226.48.0/24`；所有来源过滤 AAAA（IPv4-only）。
 - iOS WhatsApp Patch：wa-shim 监听 TCP 443，仅分流客户端网段内 `ED`/`WA` 开头的无 SNI Noise 连接，其余 fail-open 交给 sniproxy。
 - 智能分流：mihomo `smart` 出口按域名 / IP / GEOSITE / GEOIP / RULE-SET 分流，远程规则集自动更新。
 - Telegram Bot：状态、出口管理、分流规则、DNS/DoT 设置、日志、iOS 二维码。
@@ -33,7 +33,7 @@
 
 ## 安装
 
-项目版本：**0.0.5**（见 [CHANGELOG](CHANGELOG.md)）。
+项目版本：**0.0.6**（见 [CHANGELOG](CHANGELOG.md)）。
 
 一键安装/升级（自动识别首次安装、历史非 Git `/opt/5gpn` 安装和旧提交；升级保留 domain、DNS、exits、rules、证书与 Bot 状态；当前版本则不重复安装）：
 
@@ -208,7 +208,7 @@ FIREWALL_MODE=preserve          # preserve(默认)/auto/managed，见下方说�
 PGW_TUNING=essential            # essential(默认)/performance 内核调优档位
 ```
 
-旧兼容变量 `DNS_UPSTREAMS`、`OVERSEAS_DNS`、`PRIVATE_OVERSEAS_DNS`、`SNIPROXY_DNS` 等同于 `REMOTE_DNS`。也支持 `https://`、`tls://`、`udp://`、`tcp://` 协议前缀。
+旧兼容变量 `DNS_UPSTREAMS`、`OVERSEAS_DNS`、`PRIVATE_OVERSEAS_DNS`、`SNIPROXY_DNS` 等同于 `REMOTE_DNS`。DNS 上游统一使用纯 IP 或 `IP:53`；不接受 DoH/DoT 或其他协议前缀，避免不同 DNS 消费者产生不一致行为。
 
 ### 防火墙与内核调优
 
@@ -231,7 +231,7 @@ PGW_TUNING=essential            # essential(默认)/performance 内核调优档�
 
 ## 常见问题
 
-**为什么内网客户端不返回 IPv6？** 透明代理路径按 IPv4 设计；只有 `172.22.0.0/16` 来源的 AAAA 返回 NOERROR/NODATA。Wi-Fi、公网及其他来源正常返回 IPv6。
+**为什么不返回 IPv6？** 当前透明代理路径按 IPv4 设计；所有来源的 AAAA 均返回 NOERROR/NODATA。这是保留既有行为，不会自动开放 IPv6 绕过代理。
 
 **为什么国内网站直连？** ChinaList 域名由 mosdns 转发到 4 路国内 DNS 竞速代理（携带 ECS `139.226.48.0/24`），获得更适合大陆访问的结果。UDP 150ms 无响应后自动切 TCP，都不通才走海外兜底（含 `22.22.22.22`），避免单一国内 DNS 故障卡住页面。
 

@@ -28,21 +28,14 @@ class DotCertStatusTest(unittest.TestCase):
         bot._cert_expiry = lambda path=None: (None, None)
         self.assertIn("未找到证书", bot._cert_status_line())
 
-    def test_dns_upstream_parser_accepts_encrypted_urls(self):
-        value = bot._dns_arg(
-            "https://1.1.1.1/dns-query, udp://8.8.8.8:53 "
-            "tls://1.0.0.1:853 tcp://9.9.9.9:53"
-        )
-        self.assertEqual(
-            value,
-            "https://1.1.1.1/dns-query udp://8.8.8.8:53 "
-            "tls://1.0.0.1:853 tcp://9.9.9.9:53",
-        )
+    def test_dns_upstream_parser_accepts_only_plain_ip_port_53(self):
+        self.assertEqual(bot._dns_arg("1.1.1.1, 8.8.8.8:53"), "1.1.1.1 8.8.8.8:53")
+        self.assertEqual(bot._dns_arg("2001:db8::1"), "2001:db8::1")
 
     def test_dns_upstream_parser_rejects_unsafe_or_malformed_urls(self):
-        self.assertEqual(bot._dns_arg("https://example.com/dns-query"), "")
-        self.assertEqual(bot._dns_arg("https://1.1.1.1/wrong-path"), "")
-        self.assertEqual(bot._dns_arg("file://1.1.1.1/dns-query"), "")
+        for value in ("8.8.8.8:5353", "https://example.com/dns-query",
+                      "https://1.1.1.1/wrong-path", "file://1.1.1.1/dns-query"):
+            self.assertEqual(bot._dns_arg(value), "", value)
 
     def test_cert_expiry_parses_real_certificate(self):
         with tempfile.TemporaryDirectory() as tmp:

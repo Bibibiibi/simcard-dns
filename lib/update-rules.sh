@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BASE_DIR="/etc/mosdns"
+BASE_DIR="${PGW_MOSDNS_DIR:-/etc/mosdns}"
 GFWLIST_URL="https://github.com/gfwlist/gfwlist/raw/master/gfwlist.txt"
 CHINALIST_URL="https://github.com/felixonmars/dnsmasq-china-list/raw/master/accelerated-domains.china.conf"
 GFWLIST_RAW="${BASE_DIR}/gfwlist.raw"
@@ -9,7 +9,7 @@ CHINALIST_RAW="${BASE_DIR}/chinalist.raw"
 GFWLIST_FILE="${BASE_DIR}/gfwlist.txt"
 CHINALIST_FILE="${BASE_DIR}/chinalist.txt"
 GFWLIST_EXTRA_FILE="${BASE_DIR}/gfwlist-extra-local.txt"
-DEFAULT_RULES_FILE="/etc/5gpn/rules-default.conf"
+DEFAULT_RULES_FILE="${PGW_DEFAULT_RULES_FILE:-/etc/5gpn/rules-default.conf}"
 MOSDNS_TEMPLATE="${BASE_DIR}/config.yaml.template"
 MOSDNS_CONF="${BASE_DIR}/config.yaml"
 DEFAULT_REMOTE_DNS=("1.1.1.1" "8.8.8.8" "9.9.9.9")
@@ -219,6 +219,14 @@ with open(output, "w", encoding="utf-8") as target:
     target.write(content)
 PY
 
+    # Templates contain canonical paths; staging validation must read the
+    # complete candidate snapshot, never a mix of old and new domain sets.
+    python3 - "$MOSDNS_CONF.tmp" "$BASE_DIR" <<'PYPATH'
+import sys
+p, base = sys.argv[1:]
+s = open(p, encoding="utf-8").read().replace("/etc/mosdns/", base + "/")
+open(p, "w", encoding="utf-8").write(s)
+PYPATH
     if command -v mosdns >/dev/null 2>&1; then
         local validate_conf validate_log rc=0
         validate_conf=$(mktemp "${BASE_DIR}/config.validate.XXXXXX.yaml")
@@ -273,23 +281,98 @@ update_domain_cache() {
     return 1
 }
 
-echo "[$(date)] Starting mosdns rule update..."
-mkdir -p "$BASE_DIR"
-touch "$GFWLIST_EXTRA_FILE"
-
-update_domain_cache GFWList "$GFWLIST_URL" GFWLIST_RAW GFWLIST_FILE parse_gfwlist || exit 1
-update_domain_cache ChinaList "$CHINALIST_URL" CHINALIST_RAW CHINALIST_FILE parse_chinalist || exit 1
-append_local_gfwlist_extras
-append_default_rule_domains
-sort -u -o "$GFWLIST_FILE" "$GFWLIST_FILE"
-
-
-render_config
-echo "[OK] mosdns configuration generated and validated"
-if systemctl is-active --quiet mosdns; then
-    systemctl restart mosdns
-else
-    systemctl start mosdns
+# A single inherited flock serializes CLI mutations and timer updates.
+lock_file="${PGW_ROUTING_LOCK_FILE:-/run/lock/5gpn-routing.lock}"
+if [[ "${PGW_ROUTING_LOCK_FD:-}" != 9 || "$(readlink /proc/$BASHPID/fd/9 2>/dev/null || true)" != "$lock_file" ]]; then
+    mkdir -p "$(dirname "$lock_file")"
+    exec 9>"$lock_file"
+    flock -x 9
+    export PGW_ROUTING_LOCK_FD=9
 fi
-systemctl is-active --quiet mosdns || { echo "[!] mosdns failed after rule update" >&2; exit 1; }
-echo "[$(date)] Rule update completed."
+mode="${1:-}"
+case "$mode" in ""|--offline|--render-only) ;; *) echo "Unknown update mode: $mode" >&2; exit 1;; esac
+mkdir -p "$BASE_DIR"
+live="$BASE_DIR"
+stage="$(mktemp -d "$live/.rules-stage.XXXXXX")"
+backup="$(mktemp -d "$live/.rules-backup.XXXXXX")"
+files=(gfwlist.txt chinalist.txt gfwlist.raw chinalist.raw override-direct.txt override-proxy.txt override-block.txt config.yaml)
+was_active=0
+systemctl is-active --quiet mosdns && was_active=1
+published=0
+finish_update() {
+    local rc=$? file
+    trap - EXIT HUP INT TERM
+    if (( rc != 0 && published )); then
+        for file in "${files[@]}"; do
+            if [[ -e "$backup/$file" ]]; then cp -a "$backup/$file" "$live/$file"; else rm -f "$live/$file"; fi
+        done
+        if (( was_active )) && [[ "$mode" != --render-only ]]; then
+            systemctl restart mosdns || echo "[!] Previous files restored but mosdns recovery failed" >&2
+        fi
+        echo "[!] Rule update failed; previous snapshot restored" >&2
+    fi
+    rm -rf "$stage" "$backup"
+    exit "$rc"
+}
+trap finish_update EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM HUP
+for file in "${files[@]}"; do
+    [[ ! -e "$live/$file" ]] || { cp -a "$live/$file" "$backup/$file"; cp -a "$live/$file" "$stage/$file"; }
+done
+for file in .remote_dns .local_dns .public_ip .cache_size config.yaml.template gfwlist-extra-local.txt domain-overrides.conf; do
+    [[ ! -e "$live/$file" ]] || cp -a "$live/$file" "$stage/$file"
+done
+# Certificates are read-only input for validation, never part of publication.
+[[ ! -d "$live/certs" ]] || ln -s "$live/certs" "$stage/certs"
+BASE_DIR="$stage"
+GFWLIST_RAW="$stage/gfwlist.raw"; CHINALIST_RAW="$stage/chinalist.raw"
+GFWLIST_FILE="$stage/gfwlist.txt"; CHINALIST_FILE="$stage/chinalist.txt"
+GFWLIST_EXTRA_FILE="$stage/gfwlist-extra-local.txt"
+MOSDNS_TEMPLATE="$stage/config.yaml.template"; MOSDNS_CONF="$stage/config.yaml"
+if [[ -z "$mode" ]]; then
+    update_domain_cache GFWList "$GFWLIST_URL" GFWLIST_RAW GFWLIST_FILE parse_gfwlist
+    update_domain_cache ChinaList "$CHINALIST_URL" CHINALIST_RAW CHINALIST_FILE parse_chinalist
+    append_default_rule_domains
+else
+    valid_domain_cache "$GFWLIST_FILE"
+    valid_domain_cache "$CHINALIST_FILE"
+fi
+append_local_gfwlist_extras
+sort -u -o "$GFWLIST_FILE" "$GFWLIST_FILE"
+python3 - "$stage" <<'PYOVERRIDE'
+import pathlib, re, sys
+base = pathlib.Path(sys.argv[1])
+sets = {key: set() for key in ("direct", "proxy", "block")}
+p = base / "domain-overrides.conf"
+if p.exists():
+    for raw in p.read_text().splitlines():
+        if not raw.strip() or raw.lstrip().startswith("#"):
+            continue
+        domain, sep, action = raw.strip().partition("=")
+        if not sep or action not in sets or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+", domain):
+            raise SystemExit("Invalid domain override: " + raw)
+        sets[action].add(domain)
+for action, domains in sets.items():
+    (base / ("override-" + action + ".txt")).write_text("".join(x + "\n" for x in sorted(domains)))
+PYOVERRIDE
+render_config
+# Publish only after all candidate files and config have been validated.
+python3 - "$MOSDNS_CONF" "$stage" "$live" <<'PYPUBLISH'
+import sys
+p, stage, live = sys.argv[1:]
+s = open(p, encoding="utf-8").read().replace(stage + "/", live + "/")
+open(p, "w", encoding="utf-8").write(s)
+PYPUBLISH
+published=1
+for file in "${files[@]}"; do
+    if [[ -f "$stage/$file" ]]; then
+        chmod 0644 "$stage/$file"
+        mv -f "$stage/$file" "$live/$file"
+    fi
+done
+if (( was_active )) && [[ "$mode" != --render-only ]]; then
+    systemctl restart mosdns
+    systemctl is-active --quiet mosdns
+fi
+echo "[OK] Complete mosdns snapshot published; stopped services remain stopped"

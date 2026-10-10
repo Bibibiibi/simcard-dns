@@ -4,6 +4,18 @@
 # Sourced by install.sh; not meant to run standalone.
 # shellcheck shell=bash
 
+# Serialize mutations across CLI invocations and the DNS timer. The inherited
+# descriptor remains held until the management process exits.
+routing_lock() {
+    local lock_file="${PGW_ROUTING_LOCK_FILE:-/run/lock/5gpn-routing.lock}"
+    if [[ "${PGW_ROUTING_LOCK_FD:-}" != 9 || "$(readlink /proc/$BASHPID/fd/9 2>/dev/null || true)" != "$lock_file" ]]; then
+        mkdir -p "$(dirname "$lock_file")"
+        exec 9>"$lock_file"
+        flock -x 9
+        export PGW_ROUTING_LOCK_FD=9
+    fi
+}
+
 init_rules() {
     info "Initializing GFWList and ChinaList..."
     if /usr/local/bin/update-mosdns-rules.sh; then
@@ -14,6 +26,7 @@ init_rules() {
 }
 
 regen_smart() {
+    routing_lock
     [[ -f "${RULES_FILE}" ]] || { err "No rules yet. Use --set-rules or --import-rules first."; exit 1; }
     [[ -f "${MIHOMO_ROUTER_GEN}" ]] || { err "Router generator missing: ${MIHOMO_ROUTER_GEN}"; exit 1; }
     ensure_proxy_user
@@ -52,7 +65,7 @@ regen_smart() {
     fi
     install -m 600 "${yaml}.tmp" "${yaml}"; rm -f "${yaml}.tmp"
     echo router > "$type_file"
-    if [[ "$cur" == "smart" ]]; then
+    if [[ "$cur" == "smart" ]] && systemctl is-active --quiet "5gpn-mihomo@smart.service"; then
         local apply_ok=1
         systemctl restart "5gpn-mihomo@smart.service" >/dev/null 2>&1 || apply_ok=0
         [[ $apply_ok -eq 1 ]] && systemctl is-active --quiet "5gpn-mihomo@smart.service" || apply_ok=0
@@ -95,6 +108,7 @@ regen_smart() {
 }
 
 set_rules() {
+    routing_lock
     local src="${1:-}"
     ensure_proxy_user
     mkdir -p "${EXITS_DIR}" "${RULESET_CACHE}"
@@ -134,6 +148,7 @@ set_rules() {
 }
 
 add_rule() {
+    routing_lock
     local rule="${1:-}" old tmp
     [[ -n "$rule" ]] || { err "Usage: $0 --add-rule <TYPE,value,policy>"; exit 1; }
     [[ "$rule" != *$'\n'* && "$rule" != *$'\r'* ]] || { err "A rule must be one line"; exit 1; }
@@ -169,6 +184,7 @@ add_ruleset() {
 }
 
 import_rules() {
+    routing_lock
     local src="${1:-}"
     [[ -n "$src" && -f "$src" ]] || { err "Usage: $0 --import-rules <rule-list-file>"; exit 1; }
     [[ -f "${RULES_IMPORT}" ]] || { err "rule converter missing: ${RULES_IMPORT}"; exit 1; }
@@ -243,6 +259,7 @@ init_policy_map() {
 }
 
 set_policy() {
+    routing_lock
     local cat="${1:-}" target="${2:-}" old
     [[ -z "$cat" || -z "$target" ]] && { err "Usage: $0 --set-policy <category> <exit|direct|block>"; exit 1; }
     case "$target" in
@@ -274,6 +291,7 @@ show_policy() {
 }
 
 del_policy() {
+    routing_lock
     local cat="${1:-}"
     [[ -z "$cat" ]] && { err "Usage: $0 --del-policy <category>"; exit 1; }
     [[ -f "${POLICY_MAP}" ]] || { err "No policy map yet."; exit 1; }
@@ -283,6 +301,7 @@ del_policy() {
 }
 
 rename_policy() {
+    routing_lock
     local old="${1:-}" new="${2:-}" old_rules old_map
     [[ -z "$old" || -z "$new" ]] && { err "Usage: $0 --rename-policy <old> <new>"; exit 1; }
     [[ "$new" =~ ^[A-Za-z0-9_-]+$ || "$new" =~ [^[:ascii:]] ]] || { err "Invalid new name"; exit 1; }
@@ -319,29 +338,60 @@ rename_policy() {
     ok "Renamed rule group '$old' -> '$new'"
 }
 
-proxy_domain() {
-    local domain="${1:-}" target="${2:-}"
-    [[ -z "$domain" || -z "$target" ]] && { err "Usage: $0 --proxy-domain <domain> <exit|direct|block>"; exit 1; }
-    [[ "$domain" =~ ^[a-z0-9.-]+$ && "$domain" == *.* ]] || { err "Invalid domain"; exit 1; }
+proxy_domain() (
+    # Subshell gives this two-engine transaction a reliable EXIT rollback even
+    # when a generator exits or the caller enables errexit.
+    set -e
+    local domain="${1:-}" target="${2:-}" action
+    [[ "$domain" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$ ]] || { err "Invalid domain"; exit 1; }
     case "$target" in
-        direct|block) ;;
-        *) exit_exists "$target" || { err "Unknown target '$target' (exit name / direct / block)"; exit 1; } ;;
+        direct|block) action="$target" ;;
+        *) exit_exists "$target" || { err "Unknown target '$target'"; exit 1; }; action=proxy ;;
     esac
-    mkdir -p "${EXITS_DIR}"; touch "${RULES_FILE}"
-    local esc="${domain//./\\.}" rule="DOMAIN-SUFFIX,${domain},${target}"
-    grep -vE "^DOMAIN-SUFFIX,${esc}," "${RULES_FILE}" > "${RULES_FILE}.tmp" 2>/dev/null || true
-    { echo "$rule"; cat "${RULES_FILE}.tmp"; } > "${RULES_FILE}"; rm -f "${RULES_FILE}.tmp"
-    local extra="/etc/mosdns/gfwlist-extra-local.txt"
-    mkdir -p /etc/mosdns; touch "$extra"
-    if [[ "$target" == "direct" ]]; then
-        grep -vxF "$domain" "$extra" > "$extra.tmp" 2>/dev/null || true; mv "$extra.tmp" "$extra"
-    else
-        grep -qxF "$domain" "$extra" || echo "$domain" >> "$extra"
+    local dns_dir="${PGW_MOSDNS_DIR:-/etc/mosdns}" updater="${PGW_RULES_UPDATER:-/usr/local/bin/update-mosdns-rules.sh}"
+    local lock_file="${PGW_ROUTING_LOCK_FILE:-/run/lock/5gpn-routing.lock}"
+    if [[ "${PGW_ROUTING_LOCK_FD:-}" != 9 || "$(readlink /proc/$BASHPID/fd/9 2>/dev/null || true)" != "$lock_file" ]]; then
+        mkdir -p "$(dirname "$lock_file")"
+        exec 9>"$lock_file"; flock -x 9
+        export PGW_ROUTING_LOCK_FD=9
     fi
-    /usr/local/bin/update-mosdns-rules.sh >/dev/null
-    ok "Domain '${domain}' -> ${target}  (hijack: $([[ "$target" == direct ]] && echo off || echo on))"
-    regen_smart
-}
+    mkdir -p "$dns_dir" "$(dirname "$RULES_FILE")"
+    local overrides="$dns_dir/domain-overrides.conf" extra="$dns_dir/gfwlist-extra-local.txt" backup
+    backup="$(mktemp -d)"
+    local paths=("$RULES_FILE" "$overrides" "$extra") i committed=0
+    for i in "${!paths[@]}"; do [[ ! -f "${paths[$i]}" ]] || cp -a "${paths[$i]}" "$backup/$i"; done
+    # shellcheck disable=SC2317 # EXIT trap is invoked indirectly by the subshell.
+    rollback_proxy_domain() {
+        local rc=$?
+        trap - EXIT HUP INT TERM
+        if (( ! committed )); then
+            for i in "${!paths[@]}"; do
+                if [[ -f "$backup/$i" ]]; then cp -a "$backup/$i" "${paths[$i]}"; else rm -f "${paths[$i]}"; fi
+            done
+            (regen_smart) >/dev/null 2>&1 || err "Previous routing files restored; smart router recovery needs attention"
+            "$updater" --offline >/dev/null 2>&1 || err "Previous DNS inputs restored; DNS recovery needs attention"
+            err "Domain change rejected; previous inputs restored"
+        fi
+        rm -rf "$backup"
+        exit "$rc"
+    }
+    trap rollback_proxy_domain EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' HUP TERM
+    touch "$RULES_FILE" "$overrides" "$extra"
+    awk -F, -v d="$domain" '!($1=="DOMAIN-SUFFIX" && $2==d)' "$RULES_FILE" > "$backup/new-rules"
+    { printf 'DOMAIN-SUFFIX,%s,%s\n' "$domain" "$target"; cat "$backup/new-rules"; } > "$RULES_FILE"
+    awk -F= -v d="$domain" '$1!=d' "$overrides" > "$backup/new-overrides"
+    { cat "$backup/new-overrides"; printf '%s=%s\n' "$domain" "$action"; } > "$overrides"
+    # Remove stale legacy hint for direct/block; retain other installed hints.
+    grep -vxF "$domain" "$extra" > "$backup/new-extra" || true
+    [[ "$action" != proxy ]] || printf '%s\n' "$domain" >> "$backup/new-extra"
+    cat "$backup/new-extra" > "$extra"
+    (regen_smart)
+    "$updater" --offline
+    committed=1
+    ok "Domain '${domain}' -> ${target}; DNS override applies to private gateway clients only; named exit requires active smart routing"
+)
 
 show_rules() {
     if [[ -f "${RULES_FILE}" ]]; then

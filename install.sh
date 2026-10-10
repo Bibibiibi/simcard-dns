@@ -3,7 +3,7 @@
 # sourced lib/*.sh modules. Per-file shellcheck cannot see that cross-module
 # use (the original single-file install.sh made it obvious), so SC2034 is
 # suppressed file-wide here. Behaviour is unchanged by the modular split.
-# shellcheck disable=SC2034
+# shellcheck disable=SC2034,SC2153
 set -euo pipefail
 REPO_URL="https://github.com/Xiuyixx/5GPN-X.git"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -282,18 +282,95 @@ EOF
 
 # Code-only deployment deliberately avoids configuration-generating first-run
 # helpers. Existing domain/DNS, routing, certificates and bot state stay in place.
-upgrade_code() {
+upgrade_code() (
+    # Keep EXIT trap locals and the routing lock alive through rollback.
+    set -e
+    routing_lock
+    local txn committed=0 name remote_dns local_dns unit path i build_dir=""
+    remote_dns="$(normalize_dns_upstreams "$(cat /etc/mosdns/.remote_dns)")"
+    local_dns="$(normalize_dns_upstreams "$(cat /etc/mosdns/.local_dns)")"
+    [[ -n "$remote_dns" && -n "$local_dns" ]] || return 1
+    txn="$(mktemp -d "${BASE_DIR}/.upgrade-txn.XXXXXX")"
+    local paths=("$BASE_DIR/bin" "$CONF_DIR/mihomo" "$RULES_DEFAULT"
+        "$EXITS_DIR/smart.yaml" "$EXITS_DIR/smart.type" "$EXITS_DIR/smart.yaml.tmp" "$RULESET_CACHE"
+        /etc/mosdns/config.yaml.template /etc/mosdns/config.yaml
+        /etc/mosdns/gfwlist.txt /etc/mosdns/chinalist.txt
+        /etc/mosdns/override-direct.txt /etc/mosdns/override-proxy.txt /etc/mosdns/override-block.txt
+        /var/lib/5gpn-quic/remote-dns /usr/local/bin/update-mosdns-rules.sh /usr/local/bin/mosdns
+        /etc/systemd/system/quic-proxy.service /etc/systemd/system/5gpn-mihomo@.service
+        /etc/letsencrypt/renewal-hooks/deploy/99-reload-mosdns.sh)
+    local active=() units=(mosdns sniproxy quic-proxy wa-shim 5gpn-tgbot 5gpn-mihomo@smart)
+    for unit in "${units[@]}"; do
+        if systemctl is-active --quiet "$unit.service"; then active+=("$unit"); fi
+    done
+    for i in "${!paths[@]}"; do
+        path="${paths[$i]}"
+        [[ ! -e "$path" && ! -L "$path" ]] || cp -a "$path" "$txn/$i"
+    done
+    # shellcheck disable=SC2317 # Invoked by EXIT trap.
+    upgrade_rollback() {
+        local rc=$? recovery=0
+        trap - EXIT HUP INT TERM
+        if (( ! committed )); then
+            set +e
+            for i in "${!paths[@]}"; do
+                path="${paths[$i]}"
+                rm -rf "$path" || recovery=1
+                if [[ -e "$txn/$i" || -L "$txn/$i" ]]; then
+                    mkdir -p "$(dirname "$path")"
+                    cp -a "$txn/$i" "$path" || recovery=1
+                fi
+            done
+            systemctl daemon-reload || recovery=1
+            for unit in "${active[@]}"; do
+                systemctl restart "$unit.service" || recovery=1
+            done
+            if (( recovery )); then
+                err "Upgrade rollback needs attention; snapshot retained: $txn"
+                exit 1
+            fi
+        fi
+        [[ -z "$build_dir" ]] || rm -rf "$build_dir"
+        rm -rf "$txn"
+        exit "$rc"
+    }
+    trap upgrade_rollback EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' HUP TERM
+    write_quic_dns_file "$remote_dns"
     install_ctl_entrypoint
-    local name
     for name in tgbot ios-http wa-shim mihomo-exit-config mihomo-router-config rules-import; do
         install -m 0755 "${LIB_DIR}/${name}.py" "${BASE_DIR}/bin/${name}.py"
     done
     install -m 0755 "${LIB_DIR}/update-rules.sh" /usr/local/bin/update-mosdns-rules.sh
+    # Migrate managed templates/defaults on every code upgrade, while leaving
+    # runtime inputs (DNS, overrides, rule caches, exits and bot state) intact.
+    # The offline renderer publishes a new mosdns config transactionally and
+    # preserves the current mosdns active/stopped state.
+    install -m 0644 "${LIB_DIR}/mosdns.yaml.template" /etc/mosdns/config.yaml.template
+    install -m 0644 "${LIB_DIR}/rules-default.conf" "${RULES_DEFAULT}"
+    if [[ -x /usr/local/bin/update-mosdns-rules.sh ]]; then
+        /usr/local/bin/update-mosdns-rules.sh --offline
+    fi
+    if [[ -f "$RULES_FILE" ]]; then
+        # regen_smart is an interactive apply helper: it can create users,
+        # install/stop legacy units and change routes. Upgrade only renders and
+        # validates here; the existing units are restarted once below.
+        [[ -x "$MIHOMO_BIN" ]] || { err "Existing mihomo binary missing"; exit 1; }
+        local eff="$txn/effective-rules"
+        cat "$RULES_DEFAULT" "$RULES_FILE" > "$eff"
+        mkdir -p "$RULESET_CACHE" "$CONF_DIR/mihomo/smart"
+        EXITS_DIR="$EXITS_DIR" WG_DIR="$WG_DIR" PGW_RULESET_CACHE="$RULESET_CACHE" \
+            PGW_POLICY_MAP="$POLICY_MAP" python3 "$MIHOMO_ROUTER_GEN" "$eff" > "$EXITS_DIR/smart.yaml.tmp"
+        "$MIHOMO_BIN" -d "$CONF_DIR/mihomo/smart" -t -f "$EXITS_DIR/smart.yaml.tmp"
+        install -m 0600 "$EXITS_DIR/smart.yaml.tmp" "$EXITS_DIR/smart.yaml"
+        rm -f "$EXITS_DIR/smart.yaml.tmp"
+        printf 'router\n' > "$EXITS_DIR/smart.type"
+    fi
     mkdir -p /etc/letsencrypt/renewal-hooks/deploy
     install -m 0755 "${LIB_DIR}/renew-hook.sh" /etc/letsencrypt/renewal-hooks/deploy/99-reload-mosdns.sh
     # Unlike install_quic_proxy, rebuild even when the old executable exists.
     export PATH="$PATH:/usr/local/go/bin"
-    local build_dir
     build_dir="$(mktemp -d "${BASE_DIR}/.upgrade-build.XXXXXX")"
     cp "${LIB_DIR}/quic-proxy.go" "$build_dir/"
     (cd "$build_dir" && go build -ldflags="-s -w" -o quic-proxy quic-proxy.go)
@@ -301,17 +378,35 @@ upgrade_code() {
     rm -rf "$build_dir"
     # Reuse the existing pinned binary installer; it does not edit DNS config.
     install_mosdns_binary
-    local unit
-    for unit in mosdns sniproxy quic-proxy wa-shim 5gpn-tgbot; do
-        if systemctl cat "$unit.service" >/dev/null 2>&1; then
-            # Do not enable an intentionally disabled/stopped optional service.
-            if systemctl is-active --quiet "$unit.service"; then
-                systemctl restart "$unit.service"
-                systemctl is-active --quiet "$unit.service"
-            fi
-        fi
+    # Migrate the managed unit without enabling it; only active units restart.
+    cat > /etc/systemd/system/quic-proxy.service <<'EOF'
+[Unit]
+Description=quic-proxy (UDP/QUIC SNI transparent proxy)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/opt/5gpn/bin/quic-proxy -l 0.0.0.0:443 -dns-file /var/lib/5gpn-quic/remote-dns
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+User=pxout
+LimitNOFILE=65535
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+    # Keep service enablement and active/stopped state unchanged; only active units restart.
+    for unit in "${active[@]}"; do
+        systemctl restart "$unit.service"
+        systemctl is-active --quiet "$unit.service"
     done
-}
+    committed=1
+    trap - EXIT HUP INT TERM
+    rm -rf "$txn"
+)
 
 main_upgrade() {
     check_root
@@ -340,7 +435,7 @@ main_upgrade() {
     # Call directly, not inside an `if` function context that suppresses -e.
     run_install_step "更新程序并检查已有服务" upgrade_code
     rm -f "${BASE_DIR}/.upgrade-attempt"
-    ok "升级完成；已有配置和状态未重新生成。"
+    ok "升级完成；已迁移托管模板并重新生成配置，用户数据和原有服务状态已保留。"
 }
 
 case "${1:-}" in

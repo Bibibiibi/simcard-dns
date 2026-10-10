@@ -14,6 +14,26 @@ plugins:
       files:
         - /etc/mosdns/chinalist.txt
 
+  # Explicit per-domain overrides managed by --proxy-domain. These are
+  # evaluated before ChinaList/GFWList for private gateway clients only.
+  - tag: override_direct_domains
+    type: domain_set
+    args:
+      files:
+        - /etc/mosdns/override-direct.txt
+
+  - tag: override_proxy_domains
+    type: domain_set
+    args:
+      files:
+        - /etc/mosdns/override-proxy.txt
+
+  - tag: override_block_domains
+    type: domain_set
+    args:
+      files:
+        - /etc/mosdns/override-block.txt
+
   - tag: remote_primary
     type: forward
     args:
@@ -136,16 +156,37 @@ __LOCAL_SECONDARY_UPSTREAMS__
   - tag: private_client
     type: sequence
     args:
+      # Explicit overrides take precedence over downloaded lists.
+      - matches:
+          - qname $override_block_domains
+        exec: reject 0
+      - matches:
+          - qname $override_direct_domains
+        exec: goto local_resolve
+      - matches:
+          - qname $override_proxy_domains
+          - qtype 1
+        exec: black_hole __SERVER_IP__
+      - matches:
+          - has_resp
+        exec: accept
       - matches:
           - qname $china_domains
         exec: goto local_resolve
       - matches:
           - qname $gfw_domains
+          - qtype 1
         exec: black_hole __SERVER_IP__
       - matches:
           - has_resp
         exec: accept
-      - exec: black_hole __SERVER_IP__
+      - matches:
+          - qtype 1
+        exec: black_hole __SERVER_IP__
+      - matches:
+          - has_resp
+        exec: accept
+      - exec: goto remote_resolve
 
   - tag: public_client
     type: sequence

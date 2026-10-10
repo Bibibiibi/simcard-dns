@@ -9,15 +9,19 @@
 package main
 
 import (
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/binary"
 	"flag"
+	"fmt"
 	"log"
 	"net"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -33,6 +37,7 @@ const (
 var (
 	listenAddr  = flag.String("l", ":443", "Listen address (UDP)")
 	idleTimeout = flag.Duration("idle-timeout", 300*time.Second, "UDP session idle timeout")
+	dnsFile     = flag.String("dns-file", "/var/lib/5gpn-quic/remote-dns", "Overseas DNS configuration (plain IP or udp://IP:port only)")
 	debug       = flag.Bool("debug", false, "Enable debug logging")
 )
 
@@ -119,7 +124,7 @@ func (m *SessionManager) handleNewSession(data []byte, clientAddr *net.UDPAddr) 
 	}
 
 	// Resolve SNI
-	ips, err := net.LookupIP(sni)
+	ips, err := lookupBackendIPv4(sni, *dnsFile)
 	if err != nil || len(ips) == 0 {
 		log.Printf("[%s] DNS lookup failed for '%s': %v", key, sni, err)
 		return
@@ -172,6 +177,68 @@ func (m *SessionManager) handleNewSession(data []byte, clientAddr *net.UDPAddr) 
 	if *debug {
 		log.Printf("[%s] New session to %s (%s)", key, sni, backendIP)
 	}
+}
+
+// Never silently fall back to the host resolver or strip an encrypted scheme.
+// TCP/SNI and wa-shim currently require plain UDP DNS too; configuration
+// validation rejects unsupported remote transports before changing live files.
+func lookupBackendIPv4(host, path string) ([]net.IP, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	servers := strings.Fields(strings.ReplaceAll(string(data), ",", " "))
+	if len(servers) == 0 {
+		return nil, fmt.Errorf("empty overseas DNS list")
+	}
+	addresses := make([]string, 0, len(servers))
+	for _, server := range servers {
+		server = strings.TrimPrefix(server, "udp://")
+		if strings.Contains(server, "://") {
+			return nil, fmt.Errorf("unsupported remote DNS transport")
+		}
+		var ip net.IP
+		var port = "53"
+		if strings.HasPrefix(server, "[") {
+			end := strings.Index(server, "]:")
+			if end < 0 {
+				return nil, fmt.Errorf("invalid remote DNS endpoint: %s", server)
+			}
+			ip = net.ParseIP(server[1:end])
+			port = server[end+2:]
+		} else if parsed := net.ParseIP(server); parsed != nil {
+			ip = parsed
+		} else {
+			colon := strings.LastIndex(server, ":")
+			if colon <= 0 {
+				return nil, fmt.Errorf("remote DNS endpoint must use an IP address: %s", server)
+			}
+			ip = net.ParseIP(server[:colon])
+			port = server[colon+1:]
+		}
+		if ip == nil || port == "" {
+			return nil, fmt.Errorf("invalid remote DNS endpoint: %s", server)
+		}
+		portNum, scanErr := strconv.Atoi(port)
+		if scanErr != nil || portNum < 1 || portNum > 65535 {
+			return nil, fmt.Errorf("invalid remote DNS port: %s", port)
+		}
+		addresses = append(addresses, net.JoinHostPort(ip.String(), port))
+	}
+	var last error
+	for _, address := range addresses {
+		resolver := &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, network, ignored string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "udp", address)
+		}}
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		ips, err := resolver.LookupIP(ctx, "ip4", host)
+		cancel()
+		if err == nil && len(ips) > 0 {
+			return ips, nil
+		}
+		last = err
+	}
+	return nil, fmt.Errorf("configured overseas DNS lookup failed: %v", last)
 }
 
 func selectBackendIPv4(ips []net.IP) (net.IP, bool) {

@@ -10,7 +10,13 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 def functions(path):
     text = (ROOT / path).read_text()
     if path.endswith('update-rules.sh'):
-        text = text[:text.index('echo "[$(date)] Starting mosdns')]
+        # Keep only the function library; the updater's executable transaction
+        # begins at the routing-lock setup in current revisions.
+        marker = 'lock_file="${PGW_ROUTING_LOCK_FILE:-/run/lock/5gpn-routing.lock}"'
+        if marker in text:
+            text = text[:text.index(marker)]
+        else:
+            text = text[:text.index('echo "[$(date)] Starting mosdns')]
     return text
 
 
