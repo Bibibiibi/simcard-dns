@@ -15,6 +15,7 @@ set -euo pipefail
 REPO="Xiuyixx/5GPN-X"
 BRANCH="${PGW_BRANCH:-main}"
 DIR="${PGW_SRC_DIR:-/opt/5gpn}"
+COMMIT="${PGW_COMMIT:-}"
 
 RED='\033[0;31m'; BLUE='\033[0;34m'; GREEN='\033[0;32m'; NC='\033[0m'
 info() { echo -e "${BLUE}[INFO]${NC} $*"; }
@@ -23,6 +24,11 @@ err()  { echo -e "${RED}[ERR]${NC}  $*" >&2; }
 
 if [[ $EUID -ne 0 ]]; then
     err "Run as root:  curl -fsSL https://raw.githubusercontent.com/${REPO}/${BRANCH}/quick-install.sh -o /tmp/5gpn.sh && sudo bash /tmp/5gpn.sh"
+    exit 1
+fi
+
+if [[ ! "$COMMIT" =~ ^[0-9a-fA-F]{40}$ ]]; then
+    err "PGW_COMMIT must be an explicit 40-hex trusted commit (refusing floating branch installs)"
     exit 1
 fi
 
@@ -37,16 +43,26 @@ command -v git >/dev/null 2>&1 || pkg_install git || { err "git is required"; ex
 
 info "Downloading ${REPO}@${BRANCH} into ${DIR} ..."
 if [[ -d "${DIR}/.git" ]]; then
-    info "Existing repo found, pulling latest..."
-    git -C "${DIR}" fetch origin "${BRANCH}" --quiet
-    git -C "${DIR}" reset --hard "origin/${BRANCH}"
+    info "Existing repo found; checking out trusted commit..."
+    source_status="$(git -C "${DIR}" status --porcelain --untracked-files=all)"
+    if [[ -n "$source_status" ]]; then
+        err "Existing source tree has local changes; refusing to overwrite it"
+        exit 1
+    fi
+    git -C "${DIR}" fetch "https://github.com/${REPO}.git" "$COMMIT" --quiet
+    git -C "${DIR}" checkout --quiet --detach "$COMMIT"
 else
-    rm -rf "${DIR}"
-    if ! git clone --depth 1 -b "${BRANCH}" "https://github.com/${REPO}.git" "${DIR}"; then
+    if [[ -e "${DIR}" ]]; then
+        err "Destination exists but is not a git checkout; refusing to remove it"
+        exit 1
+    fi
+    if ! git clone --no-checkout "https://github.com/${REPO}.git" "${DIR}"; then
         err "git clone failed. Check network access to github.com."
         exit 1
     fi
+    git -C "${DIR}" checkout --quiet --detach "$COMMIT"
 fi
+[[ "$(git -C "${DIR}" rev-parse HEAD)" == "${COMMIT,,}" ]] || { err "Commit verification failed"; exit 1; }
 ok "Source ready at ${DIR}"
 
 cd "${DIR}"

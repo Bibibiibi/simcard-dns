@@ -391,11 +391,11 @@ firewall_managed_apply() {
         # Keep the very first pre-project ruleset around for disaster recovery.
         if [[ -f /etc/nftables.conf && ! -f /etc/nftables.conf.pgw-backup ]] \
             && ! grep -q 'pgw_exit' /etc/nftables.conf 2>/dev/null; then
-            cp -a /etc/nftables.conf /etc/nftables.conf.pgw-backup
+            cp -a /etc/nftables.conf /etc/nftables.conf.pgw-backup || return 1
             info "Existing /etc/nftables.conf backed up to /etc/nftables.conf.pgw-backup"
         fi
-        local tmp_conf; tmp_conf="$(mktemp /etc/nftables.conf.pgw.XXXXXX)"
-        cat > "$tmp_conf" <<'EOF'
+        local tmp_conf; tmp_conf="$(mktemp /etc/nftables.conf.pgw.XXXXXX)" || return 1
+        cat > "$tmp_conf" <<'EOF' || return 1
 #!/usr/sbin/nft -f
 flush ruleset
 
@@ -426,45 +426,54 @@ table inet filter {
 # reloaded independently after partial firewall reloads.
 include "/etc/5gpn/pgw-exit.nft"
 EOF
-        sed -i "s/__TCP_PORTS__/${tcp_ports}/" "$tmp_conf"
+        sed -i "s/__TCP_PORTS__/${tcp_ports}/" "$tmp_conf" || return 1
         if ! nft -c -f "$tmp_conf" >/dev/null 2>&1; then
             rm -f "$tmp_conf"
             warn "Generated nftables config failed validation; existing firewall left unchanged."
             return 1
         fi
-        install -m 755 "$tmp_conf" /etc/nftables.conf
+        install -m 755 "$tmp_conf" /etc/nftables.conf || return 1
         rm -f "$tmp_conf"
-        nft -f /etc/nftables.conf 2>/dev/null || true
-        systemctl enable nftables 2>/dev/null || true
+        if ! nft -f /etc/nftables.conf 2>/dev/null; then
+            warn "Failed to load generated nftables configuration; firewall state may still be unchanged."
+            return 1
+        fi
+        if ! systemctl enable nftables 2>/dev/null; then
+            warn "Failed to enable nftables service."
+            return 1
+        fi
     else
         # Keep the very first pre-project ruleset around for disaster recovery,
         # mirroring the nftables branch above.
         if [[ ! -f /etc/iptables.rules.pgw-backup ]] && command -v iptables-save >/dev/null 2>&1; then
-            iptables-save > /etc/iptables.rules.pgw-backup 2>/dev/null || true
+            iptables-save > /etc/iptables.rules.pgw-backup 2>/dev/null || return 1
             info "Existing iptables ruleset backed up to /etc/iptables.rules.pgw-backup"
         fi
-        iptables -F INPUT
-        iptables -P INPUT DROP
-        iptables -A INPUT -i lo -j ACCEPT
-        iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-        iptables -A INPUT -p tcp -m multiport --dports "${tcp_ports_ipt}" -j ACCEPT
+        iptables -F INPUT || return 1
+        iptables -P INPUT DROP || return 1
+        iptables -A INPUT -i lo -j ACCEPT || return 1
+        iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT || return 1
+        iptables -A INPUT -p tcp -m multiport --dports "${tcp_ports_ipt}" -j ACCEPT || return 1
         # DoT 853 — per-IP QPS 10000 then accept.
-        iptables -A INPUT -p tcp --dport 853 -m hashlimit --hashlimit-above 10000/sec --hashlimit-burst 10000 --hashlimit-mode srcip --hashlimit-name dns_dot -j DROP
-        iptables -A INPUT -p tcp --dport 853 -j ACCEPT
-        iptables -A INPUT -s 172.22.0.0/16 -p tcp -m multiport --dports 80,443 -j ACCEPT
-        iptables -A INPUT -s 172.22.0.0/16 -p udp --dport 443 -j ACCEPT
-        iptables -A INPUT -p icmp -j ACCEPT
-        iptables -P FORWARD ACCEPT
-        iptables -P OUTPUT ACCEPT
+        iptables -A INPUT -p tcp --dport 853 -m hashlimit --hashlimit-above 10000/sec --hashlimit-burst 10000 --hashlimit-mode srcip --hashlimit-name dns_dot -j DROP || return 1
+        iptables -A INPUT -p tcp --dport 853 -j ACCEPT || return 1
+        iptables -A INPUT -s 172.22.0.0/16 -p tcp -m multiport --dports 80,443 -j ACCEPT || return 1
+        iptables -A INPUT -s 172.22.0.0/16 -p udp --dport 443 -j ACCEPT || return 1
+        iptables -A INPUT -p icmp -j ACCEPT || return 1
+        iptables -P FORWARD ACCEPT || return 1
+        iptables -P OUTPUT ACCEPT || return 1
         if command -v iptables-save >/dev/null 2>&1; then
-            iptables-save > /etc/iptables.rules 2>/dev/null || true
+            iptables-save > /etc/iptables.rules 2>/dev/null || {
+                warn "Failed to persist iptables rules."
+                return 1
+            }
         fi
     fi
     # Record that this host has project-managed firewall state so uninstall can
     # clean up safely. This marker never opts a later install into managed mode.
     local mark_file="${PGW_FW_MARK:-/etc/5gpn/.firewall-managed}"
-    mkdir -p "$(dirname "$mark_file")"
-    : > "$mark_file"
+    mkdir -p "$(dirname "$mark_file")" || return 1
+    : > "$mark_file" || return 1
 }
 firewall_cleanup_on_uninstall() {
     # Called by do_uninstall BEFORE /etc/5gpn is removed. managed mode
@@ -516,27 +525,36 @@ firewall_cleanup_on_uninstall() {
 }
 setup_firewall() {
     info "Configuring firewall..."
-    ensure_proxy_user
+    ensure_proxy_user || return 1
     local mode ssh_ports tcp_ports tcp_ports_ipt
     mode="$(resolve_firewall_mode)"
     ssh_ports="$(detect_ssh_ports)"
     tcp_ports_ipt="${ssh_ports},8111"
     tcp_ports="${tcp_ports_ipt//,/, }"
     info "Firewall mode: ${mode} (detected SSH port(s): ${ssh_ports})"
-    apply_pgw_exit_rules
+    apply_pgw_exit_rules || return 1
     case "$mode" in
         preserve) firewall_preserve_hints "$ssh_ports" ;;
         auto)     firewall_auto_allow "$ssh_ports" ;;
-        managed)  firewall_managed_apply "$tcp_ports" "$tcp_ports_ipt" || true ;;
+        managed)  firewall_managed_apply "$tcp_ports" "$tcp_ports_ipt" || { warn "Managed firewall failed; inspect live rules and pre-install backups before retrying."; return 1; } ;;
     esac
     ok "Firewall configured (reverse proxy whitelist: 172.22.0.0/16)"
 }
 open_cert_http_port() {
     info "Temporarily opening TCP/80 for Let's Encrypt HTTP-01..."
     if command -v nft >/dev/null 2>&1 && nft list table inet filter >/dev/null 2>&1; then
-        nft insert rule inet filter input tcp dport 80 accept comment '"5gpn-cert-http"' 2>/dev/null || true
+        if ! nft insert rule inet filter input tcp dport 80 accept comment '"5gpn-cert-http"' 2>/dev/null; then
+            warn "Failed to temporarily open TCP/80 with nftables."
+            return 1
+        fi
     elif command -v iptables >/dev/null 2>&1; then
-        iptables -I INPUT 1 -p tcp --dport 80 -m comment --comment 5gpn-cert-http -j ACCEPT 2>/dev/null || true
+        if ! iptables -I INPUT 1 -p tcp --dport 80 -m comment --comment 5gpn-cert-http -j ACCEPT 2>/dev/null; then
+            warn "Failed to temporarily open TCP/80 with iptables."
+            return 1
+        fi
+    else
+        warn "Cannot temporarily open TCP/80: neither nft nor iptables is available."
+        return 1
     fi
 }
 close_cert_http_port() {

@@ -11,7 +11,7 @@
 - 内网来源非 ChinaList 的 A 查询返回服务器 IP，流量进入 TCP/QUIC 代理。
 - 其他来源：被墙域名不劫持，正常海外解析；其他域名也正常海外解析。
 - wa-shim / sniproxy / quic-proxy 负责 WhatsApp Noise、SNI/Host 和 QUIC 转发，出站由当前出口控制。
-- DNS 服务全局不返回 AAAA 记录，客户端只使用 IPv4。
+- 仅 `172.22.0.0/16` 内网来源的 AAAA 查询返回 NOERROR/NODATA；其他来源保留正常 IPv6 解析。
 - 国内 DNS 三层 fallback：UDP 竞速（4 路）→ 150ms 超时后 TCP 竞速 → 都不通时海外兜底（1.1.1.1、8.8.8.8、22.22.22.22）。国际 DNS primary/secondary fallback。
 
 支持的出口：本机直出、WireGuard、SOCKS5/SOCKS5H、SS/SS2022、VMess、Trojan、VLESS、Hysteria2、TUIC、AnyTLS、HTTP/HTTPS。URI 类出口由锁定版 mihomo `1.19.28` 提供 TUN 出口和智能分流。
@@ -20,7 +20,7 @@
 
 ## 主要功能
 
-- 加密 DNS：客户端统一通过 DoT 853 接入；mosdns 不监听本机 53，因此不会与 `systemd-resolved` 冲突。来源 IP 按段区分解析策略，海外 DNS 池 `1.1.1.1`、`8.8.8.8`、`9.9.9.9`，ChinaList 查询携带 ECS `139.226.48.0/24`，全局不返回 AAAA。
+- 加密 DNS：客户端统一通过 DoT 853 接入；mosdns 不监听本机 53，因此不会与 `systemd-resolved` 冲突。来源 IP 按段区分解析策略，海外 DNS 池 `1.1.1.1`、`8.8.8.8`、`9.9.9.9`，ChinaList 查询携带 ECS `139.226.48.0/24`；仅内网来源过滤 AAAA。
 - iOS WhatsApp Patch：wa-shim 监听 TCP 443，仅分流客户端网段内 `ED`/`WA` 开头的无 SNI Noise 连接，其余 fail-open 交给 sniproxy。
 - 智能分流：mihomo `smart` 出口按域名 / IP / GEOSITE / GEOIP / RULE-SET 分流，远程规则集自动更新。
 - Telegram Bot：状态、出口管理、分流规则、DNS/DoT 设置、日志、iOS 二维码。
@@ -33,19 +33,16 @@
 
 ## 安装
 
-一键安装（自动拉取仓库到 `/opt/5gpn`）：
-
-```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/Xiuyixx/5GPN-X/main/install.sh)"
-```
-
-手动安装：
+安装前先选择并审阅仓库中的完整 commit SHA。不要通过 `main` 分支的 `curl | bash` 直接执行 root 安装器；单文件 `install.sh` 缺少依赖时会拒绝自动下载未固定源码。
 
 ```bash
 git clone https://github.com/Xiuyixx/5GPN-X.git
 cd 5GPN-X
-sudo ./install.sh
+git checkout --detach <你已审阅的完整提交SHA>
+sudo bash ./install.sh
 ```
+
+`quick-install.sh` 也要求显式设置 `PGW_COMMIT` 为已审阅的完整提交 SHA；它不会替你决定哪个远端提交可信。
 
 非交互安装（无 TTY 时必须设置 `DOMAIN`）：
 
@@ -161,7 +158,7 @@ sudo ./install.sh --setup-tgbot
 
 添加出口：`🌐 出口 -> ➕ 添加出口`，直接粘贴节点链接（`ss:// vmess:// trojan:// vless:// hysteria2:// tuic:// anytls:// socks5:// http://`），备注会自动作为出口名。
 
-轮询进度持久化在 `/var/lib/5gpn/tgbot-state.json`（权限 600），服务重启后从断点继续，不会重放停机期间积压的更新；被 Telegram 限流（429）时按 `retry_after` 等待，其他轮询失败指数退避（上限 60s）。如需自定义状态文件路径，把 `TG_STATE_FILE` 写入 `/opt/5gpn/etc/tgbot.env` 后重启服务。
+轮询进度持久化在 `/var/lib/5gpn/tgbot-state.json`（权限 600），服务重启后从断点继续；停机期间尚未确认的积压更新仍可能被处理。Telegram 的下一次 `getUpdates(offset)` 即确认更小 ID，并不是本地保存 offset 才确认。被 Telegram 限流（429）时按 `retry_after` 等待，其他轮询失败指数退避（上限 60s）。如需自定义状态文件路径，把 `TG_STATE_FILE` 写入 `/opt/5gpn/etc/tgbot.env` 后重启服务。
 
 ## 配置参考
 
@@ -264,3 +261,11 @@ curl -I --resolve youtube.com:443:127.0.0.1 https://youtube.com
 ## 免责声明
 
 本项目仅用于合法的网络互通、企业专网、测试和学习场景。使用者需自行确认部署和使用行为符合所在地法律法规、云服务商条款及目标网络服务条款。项目不保证在所有网络环境下可用，也不承诺规避封锁、审查或主动探测；因误用、配置错误、服务中断等造成的后果由使用者自行承担。
+
+### 加固边界
+
+- Go 下载使用官方 SHA256，sniproxy 源码固定 commit；修改依赖版本必须同步核验摘要，固定旧版本不等于自动获得上游安全更新。
+- Certbot 优先使用系统包；Python 依赖不兼容时停止并提示人工修复，不以 root 无约束升级 pip 包。
+- Telegram Bot 仍需要 root 执行服务管理、路由、防火墙及 `/etc` 配置写入。仅限制新文件权限和 core dump，不宣称已做非 root helper 隔离；贸然使用只读系统、私有网络或设备隔离会破坏现有管理功能。
+- 安装阶段失败会中止并报告。系统包、运行时网络规则和服务变更不支持跨阶段的全量事务回滚；请保留配置备份和控制台访问，在维护窗口安装。现有 DNS/出口局部恢复不等于整个安装可原子回退。
+- 本项目目前使用 Git commit 标识源码版本，没有独立项目版本号或 CHANGELOG；依赖版本不是项目版本。

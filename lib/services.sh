@@ -73,12 +73,32 @@ install_deps() {
         case "$ARCH" in
             x86_64) GO_ARCH="amd64" ;;
             aarch64|arm64) GO_ARCH="arm64" ;;
-            *) GO_ARCH="amd64" ;;
+            *) err "Unsupported Go architecture: $ARCH"; return 1 ;;
         esac
-        wget -q "https://go.dev/dl/go${GO_VER}.linux-${GO_ARCH}.tar.gz" -O /tmp/go.tar.gz
+        # Official archive SHA256: https://go.dev/dl/?mode=json&include=all
+        local go_tmp go_sha
+        case "${GO_ARCH}" in
+            amd64) go_sha="ba79d4526102575196273416239cca418a651e049c2b099f3159db85e7bade7d" ;;
+            arm64) go_sha="a8e177c354d2e4a1b61020aca3562e27ea3e8f8247eca3170e3fa1e0c2f9e771" ;;
+        esac
+        go_tmp="$(mktemp /tmp/5gpn-go.XXXXXX.tar.gz)" || return 1
+        if ! wget -q "https://go.dev/dl/go${GO_VER}.linux-${GO_ARCH}.tar.gz" -O "$go_tmp"; then
+            rm -f "$go_tmp"
+            err "Go download failed"
+            return 1
+        fi
+        if [[ "$(sha256sum "$go_tmp" | awk '{print $1}')" != "$go_sha" ]]; then
+            rm -f "$go_tmp"
+            err "Go archive checksum mismatch; refusing installation"
+            return 1
+        fi
         rm -rf /usr/local/go
-        tar -C /usr/local -xzf /tmp/go.tar.gz
-        rm -f /tmp/go.tar.gz
+        if ! tar -C /usr/local -xzf "$go_tmp"; then
+            rm -f "$go_tmp"
+            err "Go archive extraction failed"
+            return 1
+        fi
+        rm -f "$go_tmp"
         export PATH=$PATH:/usr/local/go/bin
         # shellcheck disable=SC2016 # Write a literal profile snippet for future shells.
         printf '%s\n' 'export PATH=$PATH:/usr/local/go/bin' > /etc/profile.d/go.sh
@@ -86,9 +106,9 @@ install_deps() {
     ok "Go version: $(go version)"
     if command -v certbot >/dev/null 2>&1; then
         if ! certbot --version >/dev/null 2>&1; then
-            warn "Certbot has compatibility issues with the current Python version. Attempting to fix..."
-            pip3 install --upgrade --break-system-packages certbot josepy cryptography >>"$pkg_log" 2>&1 || \
-                pip3 install --upgrade certbot josepy cryptography >>"$pkg_log" 2>&1 || true
+            err "Certbot is installed but cannot run; refusing an unpinned root pip upgrade"
+            err "Reinstall certbot with the system package manager, then rerun the installer"
+            return 1
         fi
     fi
     if ! command -v certbot >/dev/null 2>&1; then
@@ -166,16 +186,27 @@ install_sniproxy() {
         fi
         if ! (
             set -e
-            mkdir -p "$SRC_DIR"
-            cd "$SRC_DIR"
+            mkdir -p "$SRC_DIR" || exit 1
+            cd "$SRC_DIR" || exit 1
+            # Upstream 0.6.1 peeled commit (not a moving branch/tag).
+            local sniproxy_commit="f8d9a433fe22ab2fa15c00179048ab02ae23d583"
             if [[ ! -d sniproxy ]]; then
-                git clone --quiet --depth=1 https://github.com/dlundquist/sniproxy.git
+                git clone --quiet https://github.com/dlundquist/sniproxy.git || exit 1
             fi
-            cd sniproxy
-            DEBEMAIL="root@localhost" DEBFULLNAME="root" ./autogen.sh
-            ./configure --prefix=/usr/local --sysconfdir=/etc --enable-dns
-            make -j"${MAKE_JOBS:-$(nproc)}"
-            make install
+            cd sniproxy || exit 1
+            local source_status
+            source_status="$(git status --porcelain --untracked-files=all)" || exit 1
+            if [[ -n "$source_status" ]]; then
+                err "sniproxy source tree has local changes; use a clean source tree"
+                exit 1
+            fi
+            git fetch --quiet https://github.com/dlundquist/sniproxy.git "$sniproxy_commit" || exit 1
+            git checkout --quiet --detach "$sniproxy_commit" || exit 1
+            [[ "$(git rev-parse HEAD)" == "$sniproxy_commit" ]] || exit 1
+            DEBEMAIL="root@localhost" DEBFULLNAME="root" ./autogen.sh || exit 1
+            ./configure --prefix=/usr/local --sysconfdir=/etc --enable-dns || exit 1
+            make -j"${MAKE_JOBS:-$(nproc)}" || exit 1
+            make install || exit 1
         ) >>"$build_log" 2>&1; then
             err "sniproxy 编译失败。构建日志: $build_log"
             tail -n 20 "$build_log" | sed 's/^/  /' >&2 || true
@@ -618,6 +649,8 @@ ExecStart=${py} ${BASE_DIR}/bin/tgbot.py
 Restart=on-failure
 RestartSec=5
 User=root
+UMask=0077
+LimitCORE=0
 
 [Install]
 WantedBy=multi-user.target

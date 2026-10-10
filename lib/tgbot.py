@@ -39,9 +39,22 @@ from urllib.parse import unquote, urlparse
 import urllib.request
 
 TOKEN = os.environ.get("TG_BOT_TOKEN", "").strip()
-ADMIN_IDS = {
-    int(x) for x in re.split(r"[,\s]+", os.environ.get("TG_ADMIN_IDS", "").strip()) if x
-}
+def _parse_admin_ids(raw):
+    ids = set()
+    invalid = []
+    for item in re.split(r"[,\s]+", (raw or "").strip()):
+        if not item:
+            continue
+        try:
+            ids.add(int(item))
+        except ValueError:
+            invalid.append(item)
+    if invalid:
+        print("[warn] ignoring invalid TG_ADMIN_IDS entries: %s" % ", ".join(invalid), file=sys.stderr)
+    return ids
+
+
+ADMIN_IDS = _parse_admin_ids(os.environ.get("TG_ADMIN_IDS", ""))
 MGMT = os.environ.get("MGMT", "/opt/5gpn/bin/5gpn-ctl")
 API = "https://api.telegram.org/bot%s/" % TOKEN
 
@@ -71,6 +84,8 @@ WWW_DIR = "/opt/5gpn/www"
 # Per-chat conversational state for multi-step flows (e.g. add-exit).
 PENDING = {}
 BUSY = set()
+CHAT_GENERATION = {}
+_GENERATION_LOCK = threading.RLock()
 # Per-chat "console" message: menus, progress and results are edited into this
 # single bubble instead of sending a new message every time.
 CONSOLE = {}
@@ -89,6 +104,12 @@ _EXIT_WRITE_LOCK = threading.Lock()
 _TG_API_TIMEOUT = 12
 _TG_POLL_TIMEOUT = 35
 _TG_API_IDLE_SECONDS = 25
+_UPDATE_CONTEXT = threading.local()
+_PENDING_UPDATES = {}
+_PENDING_UPDATES_LOCK = threading.RLock()
+_STATE_LOCK = threading.RLock()
+_UI_CONTEXT = threading.local()
+_LAST_OFFSET = None
 
 
 def _tg_slot(method):
@@ -158,14 +179,43 @@ def tg(method, **params):
                 return {"ok": False, "error": str(e)}
 
 
+def _chat_generation(chat_id):
+    with _GENERATION_LOCK:
+        return CHAT_GENERATION.get(chat_id, 0)
+
+
+def _bump_chat_generation(chat_id):
+    with _GENERATION_LOCK:
+        value = CHAT_GENERATION.get(chat_id, 0) + 1
+        CHAT_GENERATION[chat_id] = value
+        return value
+
+
 def background(fn, *args):
+    update_id = getattr(_UPDATE_CONTEXT, "update_id", None)
+    ui = getattr(_UI_CONTEXT, "generation", None)
+    if update_id is not None:
+        with _STATE_LOCK:
+            _PENDING_UPDATES[update_id] = _PENDING_UPDATES.get(update_id, 0) + 1
+            _write_offset_state()
+
     def go():
+        _UPDATE_CONTEXT.update_id = update_id
+        _UI_CONTEXT.generation = ui
         try:
             fn(*args)
         except Exception as e:
-            print("[err] background task: %s" % e, file=sys.stderr)
+            print("[err] background task: %s" % type(e).__name__, file=sys.stderr)
+            # Leave the durable marker: an exception is not successful completion.
+            raise
+        else:
+            if update_id is not None:
+                _finish_update_work(update_id)
+        finally:
+            _UPDATE_CONTEXT.update_id = None
+            _UI_CONTEXT.generation = None
 
-    _BG_EXECUTOR.submit(go)
+    return _BG_EXECUTOR.submit(go)
 
 
 def answer_callback_async(cb_id):
@@ -260,33 +310,51 @@ def edit_message(chat_id, message_id, text, keyboard=None, mono=False):
     return "not modified" in str(r)
 
 
-def upsert_console(chat_id, text, keyboard=None, mono=False, message_id=None):
+def upsert_console(chat_id, text, keyboard=None, mono=False, message_id=None, generation=None):
     """Update the per-chat console message in place; fall back to a new
     message only when editing is impossible (deleted / too old / media).
     Returns the message_id that now shows the content."""
-    mid = message_id if message_id is not None else CONSOLE.get(chat_id)
-    if mid is not None and edit_message(chat_id, mid, text, keyboard, mono):
-        CONSOLE[chat_id] = mid
-        return mid
-    new_mid = send(chat_id, text, keyboard, mono)
-    if new_mid is not None:
-        CONSOLE[chat_id] = new_mid
-    return new_mid
+    if generation is None:
+        ui = getattr(_UI_CONTEXT, "generation", None)
+        generation = ui[1] if ui and ui[0] == chat_id else None
+    with _GENERATION_LOCK:
+        if generation is not None and generation != CHAT_GENERATION.get(chat_id, 0):
+            return None
+        mid = message_id if message_id is not None else CONSOLE.get(chat_id)
+        if mid is not None and edit_message(chat_id, mid, text, keyboard, mono):
+            CONSOLE[chat_id] = mid
+            return mid
+        new_mid = send(chat_id, text, keyboard, mono)
+        if new_mid is not None:
+            CONSOLE[chat_id] = new_mid
+        return new_mid
 
 
-def console_async(chat_id, text_fn, keyboard=None, mono=False, keyboard_fn=None, message_id=None):
+def console_async(chat_id, text_fn, keyboard=None, mono=False, keyboard_fn=None, message_id=None, generation=None):
     """Run text_fn in the background, then edit the result into the console
     message (no extra "processing"/"result" message pair)."""
     mid = message_id if message_id is not None else CONSOLE.get(chat_id)
+    generation = _chat_generation(chat_id) if generation is None else generation
 
     def go():
         text = text_fn()
         kb = keyboard_fn() if keyboard_fn else keyboard
-        upsert_console(chat_id, text, kb, mono, message_id=mid)
+        upsert_console(chat_id, text, kb, mono, message_id=mid, generation=generation)
 
     background(go)
 
 
+def _current_ui(fn):
+    def guarded(chat_id, *args, **kwargs):
+        with _GENERATION_LOCK:
+            ui = getattr(_UI_CONTEXT, "generation", None)
+            if ui and ui[0] == chat_id and ui[1] != CHAT_GENERATION.get(chat_id, 0):
+                return None
+            return fn(chat_id, *args, **kwargs)
+    return guarded
+
+
+@_current_ui
 def reanchor_console(chat_id, text, keyboard=None, mono=False):
     """Slash commands must always be visible: send a fresh console message at
     the bottom of the chat and drop the old one (editing an old/cleared
@@ -342,10 +410,14 @@ def _busy_key_from_cb(cb):
 
 def edit_async(cb, text_fn, keyboard=None, mono=False):
     key = _busy_key_from_cb(cb)
+    generation = _chat_generation(key[0])
 
     def go():
         try:
-            edit(cb, text_fn(), keyboard, mono)
+            text = text_fn()
+            with _GENERATION_LOCK:
+                if generation == _chat_generation(key[0]):
+                    edit(cb, text, keyboard, mono)
         finally:
             BUSY.discard(key)
 
@@ -355,12 +427,14 @@ def edit_async(cb, text_fn, keyboard=None, mono=False):
 
 def edit_ios_async(cb, chat_id):
     key = _busy_key_from_cb(cb)
+    generation = _chat_generation(chat_id)
 
     def go():
         try:
             res = op_ios_send_inline(cb)
-            if res:
-                edit(cb, res, back_kb("menu:main"))
+            with _GENERATION_LOCK:
+                if generation == _chat_generation(chat_id) and res:
+                    edit(cb, res, back_kb("menu:main"))
         finally:
             BUSY.discard(key)
 
@@ -386,6 +460,7 @@ def status_kb():
             [{"text": "« 返回", "callback_data": "menu:main"}]]
 
 
+@_current_ui
 def send_photo(chat_id, path, caption="", keyboard=None):
     """Upload a local image via multipart/form-data (sendPhoto).
     Returns the new message_id, or None when Telegram rejects the upload."""
@@ -1757,6 +1832,8 @@ def handle_message(msg):
         send(chat_id, "⛔ 未授权。把你的 ID 加入 TG_ADMIN_IDS 后重试。")
         return
 
+    if text.startswith("/") or chat_id in PENDING:
+        _UI_CONTEXT.generation = (chat_id, _bump_chat_generation(chat_id))
     if text == "/cancel":
         PENDING.pop(chat_id, None)
         reanchor_console(chat_id, "已取消。选择一个操作：", main_menu())
@@ -1895,6 +1972,8 @@ def handle_callback(cb):
     if _busy_key_from_cb(cb) in BUSY:
         tg("answerCallbackQuery", callback_query_id=cb_id, text="正在处理上一项操作，请稍候…", show_alert=False)
         return
+
+    _UI_CONTEXT.generation = (chat_id, _bump_chat_generation(chat_id))
 
     # Stop the button spinner without adding another Telegram round-trip before the edit.
     answer_callback_async(cb_id)
@@ -2226,29 +2305,92 @@ def set_commands():
 _STATE_PATH = os.environ.get("TG_STATE_FILE", "/var/lib/5gpn/tgbot-state.json")
 
 
-def _load_offset():
-    """Return the next offset from persisted state, or None when absent."""
+def _load_offset(strict=False):
+    """Return the next offset and report background work interrupted by restart."""
+    global _LAST_OFFSET
     try:
         with open(_STATE_PATH) as f:
             state = json.load(f)
-        return int(state["offset"]) + 1
-    except Exception:
+        _LAST_OFFSET = int(state["offset"])
+        pending = state.get("pending") or {}
+        _PENDING_UPDATES.update({int(k): int(v) for k, v in pending.items()})
+        if pending:
+            print("[warn] %d Telegram update(s) had unfinished background work before restart; "
+                  "not replaying potentially destructive operations; inspect results manually. "
+                  "Update IDs: %s" % (len(pending), ",".join(map(str, pending))), file=sys.stderr)
+        return _LAST_OFFSET + 1
+    except (FileNotFoundError, KeyError, TypeError, ValueError, json.JSONDecodeError) as e:
+        if not isinstance(e, FileNotFoundError):
+            if strict:
+                raise RuntimeError("Invalid Telegram state; refusing unsafe replay") from e
+            print("[warn] invalid Telegram state; starting without persisted offset: %s" % e,
+                  file=sys.stderr)
         return None
 
 
-def _save_offset(update_id):
-    """Atomically persist the highest processed update id (best-effort)."""
+def _write_offset_state():
+    # Caller owns _STATE_LOCK. Failure is fatal before accepting an update:
+    # advancing getUpdates(offset) acknowledges Telegram's copy, not just disk.
+    parent = os.path.dirname(_STATE_PATH) or "."
+    os.makedirs(parent, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".tgbot-state-", dir=parent)
     try:
-        parent = os.path.dirname(_STATE_PATH)
-        if parent:
-            os.makedirs(parent, exist_ok=True)
-        tmp = _STATE_PATH + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump({"offset": update_id, "ts": int(time.time())}, f)
-        os.chmod(tmp, 0o600)
+        with os.fdopen(fd, "w") as f:
+            json.dump({"offset": _LAST_OFFSET, "pending": _PENDING_UPDATES,
+                       "ts": int(time.time())}, f)
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp, _STATE_PATH)
+        directory = os.open(parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
+def _save_offset(update_id):
+    global _LAST_OFFSET
+    with _STATE_LOCK:
+        _LAST_OFFSET = update_id
+        _write_offset_state()
+
+
+def _finish_update_work(update_id):
+    with _STATE_LOCK:
+        remaining = _PENDING_UPDATES.get(update_id, 1) - 1
+        if remaining > 0:
+            _PENDING_UPDATES[update_id] = remaining
+        else:
+            _PENDING_UPDATES.pop(update_id, None)
+        _write_offset_state()
+
+
+def _dispatch_update(upd):
+    # Record acceptance BEFORE side effects. Never store message bodies, links,
+    # tokens or credentials. Interrupted operations are reported, not replayed:
+    # an external command may already have succeeded before the crash.
+    update_id = upd["update_id"]
+    with _STATE_LOCK:
+        if _LAST_OFFSET is not None and update_id <= _LAST_OFFSET:
+            return
+        _PENDING_UPDATES[update_id] = 1
+        _save_offset(update_id)
+    _UPDATE_CONTEXT.update_id = update_id
+    try:
+        if "message" in upd:
+            handle_message(upd["message"])
+        elif "callback_query" in upd:
+            handle_callback(upd["callback_query"])
     except Exception as e:
-        print("[warn] cannot persist offset state: %s" % e, file=sys.stderr)
+        print("[err] handling update %s: %s" % (update_id, type(e).__name__), file=sys.stderr)
+    else:
+        _finish_update_work(update_id)
+    finally:
+        _UPDATE_CONTEXT.update_id = None
+        _UI_CONTEXT.generation = None
 
 
 def main():
@@ -2262,7 +2404,7 @@ def main():
 
     set_commands()
     print("5gpn tgbot started; admins=%s" % sorted(ADMIN_IDS), file=sys.stderr)
-    offset = _load_offset()
+    offset = _load_offset(strict=True)
     if offset is not None:
         print("resuming from persisted update offset %d" % offset, file=sys.stderr)
     fail_delay = 3
@@ -2289,19 +2431,9 @@ def main():
             time.sleep(delay)
             continue
         fail_delay = 3
-        batch_max = None
         for upd in resp.get("result", []):
+            _dispatch_update(upd)
             offset = upd["update_id"] + 1
-            batch_max = upd["update_id"]
-            try:
-                if "message" in upd:
-                    handle_message(upd["message"])
-                elif "callback_query" in upd:
-                    handle_callback(upd["callback_query"])
-            except Exception as e:  # never let one bad update kill the loop
-                print("[err] handling update: %s" % e, file=sys.stderr)
-        if batch_max is not None:
-            _save_offset(batch_max)
 
 
 if __name__ == "__main__":

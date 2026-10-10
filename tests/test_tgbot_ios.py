@@ -52,6 +52,15 @@ class IosQrFlowTest(unittest.TestCase):
         self.assertEqual(self.api.methods("editMessageText"), [])
         self.assertEqual(bot.CONSOLE[CHAT_ID], 300)
 
+    def test_back_delete_failure_warns_without_reposting_menu(self):
+        bot.CONSOLE[CHAT_ID] = 300
+        bot.delete_message = lambda *args: False
+        self.callback("ios_back:300", message_id=701)
+        self.assertEqual(bot.CONSOLE[CHAT_ID], 300)
+        self.assertEqual(self.api.methods("editMessageText"), [])
+        self.assertEqual(self.api.methods("sendMessage"), [])
+        self.assertTrue(self.api.methods("answerCallbackQuery"))
+
     def test_ios_action_does_not_edit_old_console_message(self):
         # The old console can be older than Telegram's 48-hour delete window.
         # QR delivery must not turn that old message into media or text.

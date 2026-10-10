@@ -237,30 +237,52 @@ PY
     mv -f "$MOSDNS_CONF.tmp" "$MOSDNS_CONF"
 }
 
+# Validate both newly parsed sets and fallback caches; empty/HTML-only data is not usable.
+valid_domain_cache() {
+    [[ -s "$1" ]] || return 1
+    local line count=0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        valid_domain "$line" || return 1
+        count=$((count + 1))
+    done < "$1"
+    (( count > 0 ))
+}
+
+update_domain_cache() {
+    local label="$1" url="$2" raw_var="$3" file_var="$4" parser="$5"
+    local raw="${!raw_var}" file="${!file_var}" work
+    work=$(mktemp -d "${file}.update.XXXXXX") || return 1
+    # A subshell redirects parser globals without touching live caches.
+    if wget -qO "$work/raw" "$url" 2>/dev/null && (
+        set -e
+        printf -v "$raw_var" '%s' "$work/raw"
+        printf -v "$file_var" '%s' "$work/domains"
+        "$parser"
+    ) && valid_domain_cache "$work/domains"; then
+        mv -f "$work/domains" "$file" || { rm -rf "$work"; return 1; }
+        mv -f "$work/raw" "$raw" || { rm -rf "$work"; return 1; }
+        rm -rf "$work"
+        return 0
+    fi
+    rm -rf "$work"
+    if valid_domain_cache "$file"; then
+        echo "[!] $label download/parse failed; keeping valid previous domain set" >&2
+        return 0
+    fi
+    echo "[!] $label download/parse failed and no valid cache exists; refusing service restart" >&2
+    return 1
+}
+
 echo "[$(date)] Starting mosdns rule update..."
 mkdir -p "$BASE_DIR"
 touch "$GFWLIST_EXTRA_FILE"
 
-if wget -qO "$GFWLIST_RAW.tmp" "$GFWLIST_URL" 2>/dev/null; then
-    mv "$GFWLIST_RAW.tmp" "$GFWLIST_RAW"
-    parse_gfwlist
-else
-    rm -f "$GFWLIST_RAW.tmp"
-    echo "[!] Failed to download GFWList; keeping the previous domain set" >&2
-    touch "$GFWLIST_FILE"
-fi
+update_domain_cache GFWList "$GFWLIST_URL" GFWLIST_RAW GFWLIST_FILE parse_gfwlist || exit 1
+update_domain_cache ChinaList "$CHINALIST_URL" CHINALIST_RAW CHINALIST_FILE parse_chinalist || exit 1
 append_local_gfwlist_extras
 append_default_rule_domains
 sort -u -o "$GFWLIST_FILE" "$GFWLIST_FILE"
 
-if wget -qO "$CHINALIST_RAW.tmp" "$CHINALIST_URL" 2>/dev/null; then
-    mv "$CHINALIST_RAW.tmp" "$CHINALIST_RAW"
-    parse_chinalist
-else
-    rm -f "$CHINALIST_RAW.tmp"
-    echo "[!] Failed to download ChinaList; keeping the previous domain set" >&2
-    touch "$CHINALIST_FILE"
-fi
 
 render_config
 echo "[OK] mosdns configuration generated and validated"

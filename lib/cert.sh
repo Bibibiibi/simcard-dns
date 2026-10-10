@@ -120,9 +120,9 @@ install_cert() {
     else
         info "申请 Let's Encrypt 证书 for $DOMAIN..."
         run_certbot() {
-            prepare_certbot_standalone
+            prepare_certbot_standalone || return 1
             trap cleanup_certbot_standalone RETURN
-            local out retry_out rc
+            local out rc
             if out="$("${cb_cmd[@]}" 2>&1)"; then rc=0; else rc=$?; fi
             CERTBOT_LAST_OUTPUT="$out"
             [[ -z "${INSTALL_LOG:-}" ]] || printf '%s\n' "$out" >> "$INSTALL_LOG"
@@ -130,14 +130,7 @@ install_cert() {
                 return 0
             fi
             if grep -q "AttributeError" <<<"$out"; then
-                warn "Certbot compatibility error detected. Attempting to fix Python dependencies..."
-                pip3 install --upgrade --break-system-packages certbot josepy cryptography >/dev/null 2>&1 || \
-                    pip3 install --upgrade certbot josepy cryptography >/dev/null 2>&1 || true
-                info "Retrying certificate request..."
-                if retry_out="$("${cb_cmd[@]}" 2>&1)"; then rc=0; else rc=$?; fi
-                CERTBOT_LAST_OUTPUT="$retry_out"
-                [[ -z "${INSTALL_LOG:-}" ]] || printf '%s\n' "$retry_out" >> "$INSTALL_LOG"
-                return $rc
+                warn "Certbot Python dependency mismatch. Repair certbot using your OS package manager or a dedicated isolated environment; no root pip upgrade was attempted."
             fi
             return 1
         }
@@ -181,15 +174,19 @@ prepare_certbot_standalone() {
     CERT_STOPPED_WA_SHIM=0
     if systemctl is-active --quiet wa-shim 2>/dev/null; then
         info "Stopping wa-shim temporarily during certificate maintenance..."
-        systemctl stop wa-shim
+        systemctl stop wa-shim || { warn "Could not stop wa-shim for certbot"; return 1; }
         CERT_STOPPED_WA_SHIM=1
     fi
     if systemctl is-active --quiet sniproxy 2>/dev/null; then
         info "Stopping sniproxy temporarily so certbot can bind TCP/80..."
-        systemctl stop sniproxy
+        systemctl stop sniproxy || { warn "Could not stop sniproxy for certbot"; cleanup_certbot_standalone; return 1; }
         CERT_STOPPED_SNIPROXY=1
     fi
-    open_cert_http_port
+    if ! open_cert_http_port; then
+        warn "TCP/80 preparation failed; aborting certbot and restoring services."
+        cleanup_certbot_standalone
+        return 1
+    fi
 }
 
 cleanup_certbot_standalone() {
@@ -213,9 +210,9 @@ set -e
 systemctl stop sniproxy 2>/dev/null || true
 systemctl stop wa-shim 2>/dev/null || true
 if command -v nft >/dev/null 2>&1 && nft list table inet filter >/dev/null 2>&1; then
-    nft insert rule inet filter input tcp dport 80 accept comment '"5gpn-cert-http"' 2>/dev/null || true
+    nft insert rule inet filter input tcp dport 80 accept comment '"5gpn-cert-http"' 2>/dev/null || { echo "Failed to open TCP/80 for certbot" >&2; /usr/local/bin/5gpn-restore-firewall.sh; exit 1; }
 elif command -v iptables >/dev/null 2>&1; then
-    iptables -I INPUT 1 -p tcp --dport 80 -m comment --comment 5gpn-cert-http -j ACCEPT 2>/dev/null || true
+    iptables -I INPUT 1 -p tcp --dport 80 -m comment --comment 5gpn-cert-http -j ACCEPT 2>/dev/null || { echo "Failed to open TCP/80 for certbot" >&2; /usr/local/bin/5gpn-restore-firewall.sh; exit 1; }
 fi
 EOF
     cat > /usr/local/bin/5gpn-restore-firewall.sh <<'EOF'
@@ -268,37 +265,24 @@ force_renew_cert() {
             --pre-hook /usr/local/bin/5gpn-open-cert-http.sh \
             --post-hook /usr/local/bin/5gpn-restore-firewall.sh)
     fi
-    prepare_certbot_standalone
+    prepare_certbot_standalone || return 1
     trap cleanup_certbot_standalone RETURN
-    local out retry_out rc
+    local out rc
     if out="$("${certbot_cmd[@]}" 2>&1)"; then rc=0; else rc=$?; fi
     printf '%s\n' "$out"
     if [[ $rc -ne 0 ]]; then
         if grep -q "AttributeError" <<<"$out"; then
-            warn "Certbot compatibility error detected. Attempting to fix Python dependencies..."
-            pip3 install --upgrade --break-system-packages certbot josepy cryptography 2>/dev/null || \
-                pip3 install --upgrade certbot josepy cryptography 2>/dev/null || true
-            info "Retrying certificate renewal..."
-            if retry_out="$("${certbot_cmd[@]}" 2>&1)"; then rc=0; else rc=$?; fi
-            printf '%s\n' "$retry_out"
-            if [[ $rc -ne 0 ]]; then
-                err "证书续期/签发失败。certbot 最后输出:"
-                if [[ -n "$retry_out" ]]; then
-                    printf '%s\n' "$retry_out" | tail -n 30 >&2
-                else
-                    err "certbot 没有输出；请检查端口 80 是否被其他服务占用，以及防火墙是否允许外部访问 80。"
-                fi
-                exit 1
-            fi
-        else
-            err "证书续期/签发失败。certbot 最后输出:"
-            if [[ -n "$out" ]]; then
-                printf '%s\n' "$out" | tail -n 30 >&2
-            else
-                err "certbot 没有输出；请检查端口 80 是否被其他服务占用，以及防火墙是否允许外部访问 80。"
-            fi
-            exit 1
+            warn "Certbot Python dependency mismatch. Repair with OS packages or a dedicated isolated environment; no root pip upgrade was attempted."
         fi
+        err "证书续期/签发失败。certbot 最后输出:"
+        if [[ -n "$out" ]]; then
+            printf '%s\n' "$out" | tail -n 30 >&2
+        else
+            err "certbot 没有输出；请检查 TCP/80 是否可达、端口监听和 DNS。"
+        fi
+        cleanup_certbot_standalone
+        trap - RETURN
+        return "$rc"
     fi
     local cert_live_dir="/etc/letsencrypt/live/${DOMAIN}"
     if [[ -d "$cert_live_dir" ]]; then
