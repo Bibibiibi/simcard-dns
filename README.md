@@ -33,7 +33,7 @@
 
 ## 安装
 
-项目版本：**0.0.3**（见 [CHANGELOG](CHANGELOG.md)）。
+项目版本：**0.0.5**（见 [CHANGELOG](CHANGELOG.md)）。
 
 一键安装/升级（自动识别首次安装、历史非 Git `/opt/5gpn` 安装和旧提交；升级保留 domain、DNS、exits、rules、证书与 Bot 状态；当前版本则不重复安装）：
 

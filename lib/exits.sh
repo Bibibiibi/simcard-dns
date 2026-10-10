@@ -500,6 +500,21 @@ del_exit() {
     [[ -z "$name" ]] && { err "Usage: $0 --del-exit <name>"; exit 1; }
     [[ "$name" == "local" ]] && { err "'local' cannot be removed"; exit 1; }
     exit_exists "$name" || { err "Unknown exit '$name'"; exit 1; }
+    if [[ -f "${RULES_FILE}" ]] && awk -F, -v n="$name" '
+        /^[[:space:]]*(#|;|$)/ { next }
+        { gsub(/^[[:space:]]+|[[:space:]]+$/, "", $NF); if ($NF == n) { found=1; exit } }
+        END { exit(found ? 0 : 1) }
+    ' "${RULES_FILE}"; then
+        err "Cannot remove exit '$name': it is referenced by routing rules"
+        exit 1
+    fi
+    if [[ -f "${POLICY_MAP}" ]] && awk -F= -v n="$name" '
+        { gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); if ($2 == n) { found=1; exit } }
+        END { exit(found ? 0 : 1) }
+    ' "${POLICY_MAP}"; then
+        err "Cannot remove exit '$name': it is referenced by a policy mapping"
+        exit 1
+    fi
     local cur="local"
     [[ -f "${CONF_DIR}/current-exit" ]] && cur="$(cat "${CONF_DIR}/current-exit" 2>/dev/null || echo local)"
     if [[ "$cur" == "$name" ]]; then
