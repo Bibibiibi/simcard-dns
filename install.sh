@@ -6,8 +6,13 @@
 # shellcheck disable=SC2034,SC2153
 set -euo pipefail
 REPO_URL="https://github.com/Xiuyixx/5GPN-X.git"
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SCRIPT_PATH="${SCRIPT_DIR}/$(basename "$0")"
+if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    SCRIPT_PATH="${SCRIPT_DIR}/$(basename "${BASH_SOURCE[0]}")"
+else
+    SCRIPT_DIR="/nonexistent/5gpn-raw-entrypoint"
+    SCRIPT_PATH="${SCRIPT_DIR}/install.sh"
+fi
 LIB_DIR="${SCRIPT_DIR}/lib"
 BASE_DIR="/opt/5gpn"
 CONF_DIR="${BASE_DIR}/etc"
@@ -36,9 +41,9 @@ DEFAULT_LOCAL_DNS=("101.226.4.6" "218.30.118.6" "180.76.76.76" "119.29.29.29")
 bootstrap_err() { printf 'Error: %s\n' "$*" >&2; }
 
 bootstrap_from_repo_if_needed() {
-    # install.sh itself is always present (it is the running script, and the
-    # installed CLI is copied to ${BASE_DIR}/bin/5gpn-ctl). Only the sourced
-    # lib/* payload can be missing, so validate those next to this script.
+    # A raw curl | sudo bash stream has no adjacent lib tree. Pin main first,
+    # then fetch the compatibility launcher at exactly that commit. The
+    # launcher owns source staging, legacy upgrades, tty handling and args.
     local required=(
         lib/common.sh lib/dns.sh lib/cert.sh lib/services.sh
         lib/exits.sh lib/rules.sh lib/uninstall.sh
@@ -47,18 +52,60 @@ bootstrap_from_repo_if_needed() {
         lib/wa-shim.py lib/rules-import.py lib/mihomo-exit-config.py
         lib/mihomo-router-config.py lib/rules-default.conf lib/host-setup.sh
     )
-    local missing=0 f
+    local missing=0 f commit launcher
     for f in "${required[@]}"; do
         [[ -f "${SCRIPT_DIR}/${f}" ]] || { missing=1; break; }
     done
-    if [[ $missing -eq 0 ]]; then
-        return 0
+    [[ $missing -eq 0 ]] && return 0
+    if [[ "$(basename -- "$SCRIPT_PATH")" == 5gpn-ctl ]]; then
+        bootstrap_err "Missing ${f}; restore the self-contained CLI from a full checkout"
+        return 1
     fi
-    bootstrap_err "Missing ${f}; refusing to download and execute an unpinned main branch."
-    bootstrap_err "Use a full clone: git clone ${REPO_URL}; cd 5GPN-X; git checkout --detach <reviewed-commit>; bash install.sh"
-    return 1
+    [[ $EUID -eq 0 ]] || { bootstrap_err "Run the installer as root (for example: curl .../install.sh | sudo bash)"; return 1; }
+    pkg_install() {
+        if command -v apt-get >/dev/null 2>&1; then
+            DEBIAN_FRONTEND=noninteractive apt-get update -qq && apt-get install -y -qq "$@"
+        elif command -v dnf >/dev/null 2>&1; then
+            dnf install -y -q "$@"
+        elif command -v yum >/dev/null 2>&1; then
+            yum install -y -q "$@"
+        else
+            return 1
+        fi
+    }
+    # Existing management commands remain usable without GitHub connectivity.
+    if [[ $# -gt 0 && -f "${BASE_DIR}/bin/5gpn-ctl" ]]; then
+        exec bash "${BASE_DIR}/bin/5gpn-ctl" "$@"
+    fi
+    command -v curl >/dev/null 2>&1 || {
+        pkg_install curl || { bootstrap_err "curl is required for the raw installer"; return 1; }
+    }
+    if [[ -n "${PGW_COMMIT:-}" ]]; then
+        commit="${PGW_COMMIT,,}"
+    else
+        command -v git >/dev/null 2>&1 || {
+            pkg_install git || { bootstrap_err "git is required to resolve the pinned main commit"; return 1; }
+        }
+        commit="$(git ls-remote "$REPO_URL" refs/heads/main | awk 'NR==1 {print $1}')" || { bootstrap_err "Unable to resolve main from GitHub"; return 1; }
+    fi
+    [[ "$commit" =~ ^[0-9a-fA-F]{40}$ ]] || { bootstrap_err "Unable to resolve a complete main commit; set PGW_COMMIT to a 40-hex commit and retry"; return 1; }
+    commit="${commit,,}"
+    launcher="$(mktemp "${TMPDIR:-/tmp}/5gpn-quick.XXXXXX")" || return 1
+    if ! curl -fsSL "https://raw.githubusercontent.com/Xiuyixx/5GPN-X/${commit}/quick-install.sh" -o "$launcher"; then
+        rm -f -- "$launcher"; bootstrap_err "Unable to download the pinned installer launcher"; return 1
+    fi
+    chmod 700 "$launcher"
+    export PGW_COMMIT="$commit"
+    # Do not `exec`: bash does not run an EXIT trap during exec replacement,
+    # which would leave the downloaded launcher in /tmp after completion.
+    set +e
+    bash "$launcher" "$@"
+    local rc=$?
+    set -e
+    rm -f -- "$launcher"
+    exit "$rc"
 }
-bootstrap_from_repo_if_needed "$@" || exit 1
+bootstrap_from_repo_if_needed "$@"
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'

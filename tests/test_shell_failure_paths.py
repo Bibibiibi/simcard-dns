@@ -73,9 +73,9 @@ update_domain_cache test URL RAW FILE parse_test
                     self.assertEqual(result.returncode, 0 if old else 1, result.stderr)
                     self.assertEqual(cache.read_text(), old)
 
-    def test_partial_bootstrap_fails_without_network(self):
+    def test_broken_installed_cli_fails_without_network(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = pathlib.Path(tmp) / 'install.sh'
+            path = pathlib.Path(tmp) / '5gpn-ctl'
             path.write_text((ROOT / 'install.sh').read_text())
             result = subprocess.run(['bash', str(path)], capture_output=True, text=True,
                                     env={'PATH': '/usr/bin:/bin', 'G5PNX_BOOTSTRAPPED': '1'})
