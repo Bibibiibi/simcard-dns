@@ -81,11 +81,13 @@ setup_tgbot
             (mock / 'git').write_text('#!/bin/bash\ncase "$3" in\nstatus|fetch|checkout) exit 0;;\nrev-parse) echo ' + commit + ';;\nesac\n')
             (mock / 'git').chmod(0o755)
             env = dict(os.environ, PATH=str(mock) + ':' + os.environ['PATH'], PGW_SRC_DIR=str(source), PGW_COMMIT=commit)
-            result = subprocess.run(['bash', str(ROOT / 'quick-install.sh'), '--setup-tgbot'], env=env, capture_output=True, text=True)
+            launcher = base / 'bootstrap.sh'
+            launcher.write_text("set -euo pipefail\n" + (ROOT / 'install.sh').read_text().split('bootstrap_install() (\n', 1)[1].split('\n)\n', 1)[0].replace('RUNTIME_DIR="/opt/5gpn"', f'RUNTIME_DIR="{runtime}"'))
+            result = subprocess.run(['bash', str(launcher), '--setup-tgbot'], env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual((base / 'args').read_text().strip(), '--setup-tgbot')
             self.assertEqual((runtime / 'keep').read_text(), 'data')
-            self.assertIn('PGW_SRC_DIR:-/opt/5gpn-source', (ROOT / 'quick-install.sh').read_text())
+            self.assertIn('PGW_SRC_DIR:-/opt/5gpn-source', (ROOT / 'install.sh').read_text())
 
 
 if __name__ == '__main__':

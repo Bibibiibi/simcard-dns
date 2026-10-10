@@ -71,6 +71,16 @@ exit 0
         self.assertEqual(before, {p.name: p.read_bytes() for p in self.dns.iterdir()})
         self.assertFalse((self.base / 'restarts').exists())
 
+    def test_legacy_missing_public_ip_and_failed_route_uses_fallback(self):
+        (self.dns / '.public_ip').unlink()
+        mock = self.base / 'bin/ip'
+        mock.write_text('#!/bin/sh\nexit 1\n')
+        mock.chmod(0o755)
+        result = self.run_update('--render-only')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('127.0.0.1', (self.dns / 'config.yaml').read_text())
+        self.assertFalse((self.base / 'restarts').exists())
+
     def test_render_only_never_restarts(self):
         result = self.run_update('--render-only')
         self.assertEqual(result.returncode, 0, result.stderr)

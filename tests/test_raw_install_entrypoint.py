@@ -21,29 +21,15 @@ class RawEntrypointTests(unittest.TestCase):
         self.runtime = self.base / 'runtime'
         # Disable only the root gate in this isolated source copy (CI is nonroot).
         self.script = (ROOT / 'install.sh').read_text().replace(
-            '[[ $EUID -eq 0 ]]', '[[ 1 -eq 1 ]]').replace(
-            'BASE_DIR="/opt/5gpn"', f'BASE_DIR="{self.runtime}"')
+            'if [[ $EUID -ne 0 ]]; then', 'if false; then').replace(
+            'BASE_DIR="/opt/5gpn"', f'BASE_DIR="{self.runtime}"').replace('RUNTIME_DIR="/opt/5gpn"', f'RUNTIME_DIR="{self.runtime}"')
         # A closed PATH makes missing-git tests independent of host packages.
-        for name in ('bash', 'awk', 'mktemp', 'rm', 'chmod', 'cat', 'dirname', 'basename'):
+        for name in ('bash', 'awk', 'mktemp', 'rm', 'chmod', 'cat', 'dirname', 'basename', 'realpath', 'stat', 'mkdir', 'cp', 'mv', 'date'):
             (self.bin / name).symlink_to(shutil.which(name))
-        self.mock('git', '''echo "git:$*" >> "$CALLS"
-[[ "${FAIL_REF:-0}" == 0 ]] || exit 17
-printf '%s refs/heads/main\\n' "${SHA_RESULT:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}"
-''')
-        self.mock('curl', '''echo "curl:$*" >> "$CALLS"
-while (($#)); do
-    if [[ $1 == -o ]]; then out=$2; shift 2; else shift; fi
-done
-[[ "${FAIL_DOWNLOAD:-0}" == 0 ]] || { echo partial > "$out"; exit 22; }
-cat > "$out" <<'LAUNCHER'
-#!/usr/bin/env bash
-printf 'launcher:<%s>\\n' "$@" >> "$CALLS"
-echo "commit:$PGW_COMMIT" >> "$CALLS"
-exit "${LAUNCHER_RC:-0}"
-LAUNCHER
-''')
+        self.mock('git', 'echo "git:$*" >> "$CALLS"\ncase "$1" in\nls-remote) [[ "${FAIL_REF:-0}" == 0 ]] || exit 17; echo "${SHA_RESULT:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa} refs/heads/main";;\nclone) [[ "${FAIL_DOWNLOAD:-0}" == 0 ]] || exit 22; mkdir -p "${@: -1}/.git"; cp "$TMPDIR/fixture" "${@: -1}/install.sh";;\n-C) [[ "$3" != rev-parse ]] || echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa;;\nesac\n')
+        (self.base / 'fixture').write_text('printf \'launcher:<%s>\\n\' "$@" >> "$CALLS"\necho "commit:$PGW_COMMIT" >> "$CALLS"\nexit "${LAUNCHER_RC:-0}"\n')
         self.env = dict(os.environ, PATH=str(self.bin), CALLS=str(self.calls),
-                        TMPDIR=str(self.base))
+                        TMPDIR=str(self.base), PGW_SRC_DIR=str(self.base / "source"))
         self.env.pop('PGW_COMMIT', None)
 
     def mock(self, name, body):
@@ -71,15 +57,15 @@ LAUNCHER
     def test_pipe_pins_and_preserves_argument_boundaries(self):
         result = self.run_raw('--status', 'two words')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn(f'/{SHA}/quick-install.sh', self.log())
+        self.assertIn(f'checkout --quiet --detach {SHA}', self.log())
         self.assertIn('launcher:<two words>', self.log())
         self.assertIn(f'commit:{SHA}', self.log())
 
     def test_explicit_commit_skips_resolution(self):
         result = self.run_raw(PGW_COMMIT=SHA.upper())
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertNotIn('git:', self.log())
-        self.assertIn(f'/{SHA}/quick-install.sh', self.log())
+        self.assertNotIn('git:ls-remote', self.log())
+        self.assertIn(f'checkout --quiet --detach {SHA}', self.log())
 
     def test_resolution_and_download_failures_never_launch(self):
         for env in ({'FAIL_REF': '1'}, {'SHA_RESULT': 'bad'},
@@ -126,6 +112,7 @@ LAUNCHER
         git_body = (self.bin / 'git').read_text()
         for manager in ('apt-get', 'dnf', 'yum'):
             with self.subTest(manager=manager):
+                (self.runtime / '.installed-commit').unlink(missing_ok=True)
                 (self.bin / 'git').unlink(missing_ok=True)
                 self.calls.unlink(missing_ok=True)
                 template = self.base / 'git-template'
@@ -147,7 +134,7 @@ LAUNCHER
         self.mock('apt-get', 'exit 8\n')
         result = self.run_raw()
         self.assertNotEqual(result.returncode, 0)
-        self.assertNotIn('curl:', self.log())
+        self.assertNotIn('launcher:', self.log())
 
 
 if __name__ == '__main__':

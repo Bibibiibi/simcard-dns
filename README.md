@@ -33,7 +33,7 @@
 
 ## 安装
 
-项目版本：**0.0.8**（见 [CHANGELOG](CHANGELOG.md)）。
+项目版本：**0.0.9**（见 [CHANGELOG](CHANGELOG.md)）。
 
 一键安装/升级（自动识别首次安装、历史非 Git `/opt/5gpn` 安装和旧提交；升级保留 domain、DNS、exits、rules、证书与 Bot 状态；当前版本则不重复安装）：
 
@@ -163,7 +163,6 @@ sudo /opt/5gpn/bin/5gpn-ctl --setup-tgbot
 
 ```text
 install.sh       # 推荐的一键安装入口（兼容 full checkout）
-quick-install.sh  # 兼容旧链接的安装引导
 lib/              # 组件源码与模板（tgbot、wa-shim、Go 代理、mosdns 模板等）
 tests/            # 策略测试
 ```

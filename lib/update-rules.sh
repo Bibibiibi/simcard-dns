@@ -187,7 +187,7 @@ PY
 render_config() {
     local server_ip remote_dns local_dns cache_size
     local remote_primary remote_secondary local_primary local_secondary
-    server_ip=$(cat "$BASE_DIR/.public_ip" 2>/dev/null || ip route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]\+\).*/\1/p' | head -n1)
+    server_ip=$(cat "$BASE_DIR/.public_ip" 2>/dev/null || ip route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]\+\).*/\1/p' | head -n1 || true)
     [[ -n "$server_ip" ]] || server_ip="127.0.0.1"
     remote_dns=$(cat "$BASE_DIR/.remote_dns" 2>/dev/null || printf '%s ' "${DEFAULT_REMOTE_DNS[@]}")
     local_dns=$(cat "$BASE_DIR/.local_dns" 2>/dev/null || printf '%s ' "${DEFAULT_LOCAL_DNS[@]}")
@@ -301,6 +301,9 @@ systemctl is-active --quiet mosdns && was_active=1
 published=0
 finish_update() {
     local rc=$? file
+    if (( rc != 0 )); then
+        echo "[!] DNS snapshot failed: stage=${dns_stage:-prepare} exit=$rc; live inputs retained unless publication rollback is reported below" >&2
+    fi
     trap - EXIT HUP INT TERM
     if (( rc != 0 && published )); then
         for file in "${files[@]}"; do
@@ -330,6 +333,7 @@ GFWLIST_RAW="$stage/gfwlist.raw"; CHINALIST_RAW="$stage/chinalist.raw"
 GFWLIST_FILE="$stage/gfwlist.txt"; CHINALIST_FILE="$stage/chinalist.txt"
 GFWLIST_EXTRA_FILE="$stage/gfwlist-extra-local.txt"
 MOSDNS_TEMPLATE="$stage/config.yaml.template"; MOSDNS_CONF="$stage/config.yaml"
+dns_stage="domain-cache"
 if [[ -z "$mode" ]]; then
     update_domain_cache GFWList "$GFWLIST_URL" GFWLIST_RAW GFWLIST_FILE parse_gfwlist
     update_domain_cache ChinaList "$CHINALIST_URL" CHINALIST_RAW CHINALIST_FILE parse_chinalist
@@ -344,8 +348,10 @@ else
         exit 1
     fi
 fi
+dns_stage="local-extras"
 append_local_gfwlist_extras
 sort -u -o "$GFWLIST_FILE" "$GFWLIST_FILE"
+dns_stage="domain-overrides"
 python3 - "$stage" <<'PYOVERRIDE'
 import pathlib, re, sys
 base = pathlib.Path(sys.argv[1])
@@ -362,6 +368,7 @@ if p.exists():
 for action, domains in sets.items():
     (base / ("override-" + action + ".txt")).write_text("".join(x + "\n" for x in sorted(domains)))
 PYOVERRIDE
+dns_stage="render-validation"
 render_config
 # Publish only after all candidate files and config have been validated.
 python3 - "$MOSDNS_CONF" "$stage" "$live" <<'PYPUBLISH'
@@ -370,6 +377,7 @@ p, stage, live = sys.argv[1:]
 s = open(p, encoding="utf-8").read().replace(stage + "/", live + "/")
 open(p, "w", encoding="utf-8").write(s)
 PYPUBLISH
+dns_stage="publish"
 published=1
 for file in "${files[@]}"; do
     if [[ -f "$stage/$file" ]]; then
@@ -377,6 +385,7 @@ for file in "${files[@]}"; do
         mv -f "$stage/$file" "$live/$file"
     fi
 done
+dns_stage="restart"
 if (( was_active )) && [[ "$mode" != --render-only ]]; then
     systemctl restart mosdns
     systemctl is-active --quiet mosdns

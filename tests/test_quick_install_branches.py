@@ -22,7 +22,7 @@ class LauncherTests(unittest.TestCase):
         self.bin = self.base / "bin"
         self.bin.mkdir()
         self.launcher = self.base / "quick.sh"
-        text = (ROOT / "quick-install.sh").read_text()
+        text = "set -euo pipefail\n" + (ROOT / "install.sh").read_text().split("bootstrap_install() (\n", 1)[1].split("\n)\n", 1)[0]
         text = text.replace('RUNTIME_DIR="/opt/5gpn"', f'RUNTIME_DIR="{self.runtime}"')
         # Root check only is disabled for non-root CI; actual operations mocked.
         text = text.replace('if [[ $EUID -ne 0 ]]; then', 'if false; then')

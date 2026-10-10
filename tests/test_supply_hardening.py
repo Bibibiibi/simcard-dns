@@ -46,13 +46,15 @@ install_deps
         with tempfile.TemporaryDirectory() as tmp:
             marker = Path(tmp) / "data"
             marker.write_text("keep")
-            env = dict(os.environ, PGW_SRC_DIR=tmp, PGW_COMMIT="")
-            result = subprocess.run(["bash", str(ROOT / "quick-install.sh")], env=env,
+            launcher = Path(tmp) / "bootstrap.sh"
+            launcher.write_text("set -euo pipefail\n" + (ROOT / "install.sh").read_text().split("bootstrap_install() (\n", 1)[1].split("\n)\n", 1)[0].replace('RUNTIME_DIR="/opt/5gpn"', f'RUNTIME_DIR="{tmp}/runtime"'))
+            env = dict(os.environ, PGW_SRC_DIR=tmp, PGW_COMMIT="invalid")
+            result = subprocess.run(["bash", str(launcher)], env=env,
                                     capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(marker.read_text(), "keep")
             env["PGW_COMMIT"] = "a" * 40
-            result = subprocess.run(["bash", str(ROOT / "quick-install.sh")], env=env,
+            result = subprocess.run(["bash", str(launcher)], env=env,
                                     capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(marker.read_text(), "keep")

@@ -3,7 +3,7 @@
 # package manager, systemd, Telegram, or production paths are touched.
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-quick="$(<"${root}/quick-install.sh")"
+quick="$(<"${root}/install.sh")"
 install="$(<"${root}/install.sh")"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
