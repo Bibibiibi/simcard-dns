@@ -285,11 +285,16 @@ EOF
 upgrade_code() (
     # Keep EXIT trap locals and the routing lock alive through rollback.
     set -e
+    local upgrade_stage=lock
+    # Fixed stage labels only: never log shell commands or configuration data.
+    trap 'rc=$?; if (( rc != 0 )); then printf "[!] Upgrade failed: stage=%s exit=%s\n" "$upgrade_stage" "$rc" >&2; fi' EXIT
     routing_lock
+    upgrade_stage=dns-preflight
     local txn committed=0 name remote_dns local_dns unit path i build_dir=""
     remote_dns="$(normalize_dns_upstreams "$(cat /etc/mosdns/.remote_dns)")"
     local_dns="$(normalize_dns_upstreams "$(cat /etc/mosdns/.local_dns)")"
     [[ -n "$remote_dns" && -n "$local_dns" ]] || return 1
+    upgrade_stage=snapshot
     txn="$(mktemp -d "${BASE_DIR}/.upgrade-txn.XXXXXX")"
     local paths=("$BASE_DIR/bin" "$CONF_DIR/mihomo" "$RULES_DEFAULT"
         "$EXITS_DIR/smart.yaml" "$EXITS_DIR/smart.type" "$EXITS_DIR/smart.yaml.tmp" "$RULESET_CACHE"
@@ -311,6 +316,9 @@ upgrade_code() (
     upgrade_rollback() {
         local rc=$? recovery=0
         trap - EXIT HUP INT TERM
+        if (( rc != 0 )); then
+            printf '[!] Upgrade failed: stage=%s exit=%s\n' "$upgrade_stage" "$rc" >&2
+        fi
         if (( ! committed )); then
             set +e
             for i in "${!paths[@]}"; do
@@ -337,6 +345,7 @@ upgrade_code() (
     trap upgrade_rollback EXIT
     trap 'exit 130' INT
     trap 'exit 143' HUP TERM
+    upgrade_stage=deploy-code
     write_quic_dns_file "$remote_dns"
     install_ctl_entrypoint
     for name in tgbot ios-http wa-shim mihomo-exit-config mihomo-router-config rules-import; do
@@ -349,9 +358,11 @@ upgrade_code() (
     # preserves the current mosdns active/stopped state.
     install -m 0644 "${LIB_DIR}/mosdns.yaml.template" /etc/mosdns/config.yaml.template
     install -m 0644 "${LIB_DIR}/rules-default.conf" "${RULES_DEFAULT}"
+    upgrade_stage=offline-dns
     if [[ -x /usr/local/bin/update-mosdns-rules.sh ]]; then
-        /usr/local/bin/update-mosdns-rules.sh --offline
+        /usr/local/bin/update-mosdns-rules.sh --render-only
     fi
+    upgrade_stage=smart-config
     if [[ -f "$RULES_FILE" ]]; then
         # regen_smart is an interactive apply helper: it can create users,
         # install/stop legacy units and change routes. Upgrade only renders and
@@ -367,9 +378,11 @@ upgrade_code() (
         rm -f "$EXITS_DIR/smart.yaml.tmp"
         printf 'router\n' > "$EXITS_DIR/smart.type"
     fi
+    upgrade_stage=renew-hook
     mkdir -p /etc/letsencrypt/renewal-hooks/deploy
     install -m 0755 "${LIB_DIR}/renew-hook.sh" /etc/letsencrypt/renewal-hooks/deploy/99-reload-mosdns.sh
     # Unlike install_quic_proxy, rebuild even when the old executable exists.
+    upgrade_stage=quic-build
     export PATH="$PATH:/usr/local/go/bin"
     build_dir="$(mktemp -d "${BASE_DIR}/.upgrade-build.XXXXXX")"
     cp "${LIB_DIR}/quic-proxy.go" "$build_dir/"
@@ -377,7 +390,9 @@ upgrade_code() (
     install -m 0755 "$build_dir/quic-proxy" "${BASE_DIR}/bin/quic-proxy"
     rm -rf "$build_dir"
     # Reuse the existing pinned binary installer; it does not edit DNS config.
+    upgrade_stage=mosdns-binary
     install_mosdns_binary
+    upgrade_stage=service-unit
     # Migrate the managed unit without enabling it; only active units restart.
     cat > /etc/systemd/system/quic-proxy.service <<'EOF'
 [Unit]
@@ -400,6 +415,7 @@ EOF
     systemctl daemon-reload
     # Keep service enablement and active/stopped state unchanged; only active units restart.
     for unit in "${active[@]}"; do
+        upgrade_stage="restart-$unit"
         systemctl restart "$unit.service"
         systemctl is-active --quiet "$unit.service"
     done

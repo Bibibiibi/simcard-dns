@@ -108,6 +108,7 @@ INSTALL_LOG="$TEST_ROOT/upgrade.log"
 # Never run download/install helpers or any interactive routing apply helper.
 install_mosdns_binary() { printf 'new-mosdns\\n' > "${TEST_ROOT}/fs/usr/local/bin/mosdns"; }
 regen_smart() { echo forbidden-regen >&2; exit 99; }
+init_install_log
 run_install_step upgrade upgrade_code
 printf 'completed\\n'
 ''')
@@ -157,13 +158,36 @@ printf 'completed\\n'
 
     def test_build_failure_rolls_back_and_cleans_build_directory(self):
         self.assert_rollback('build')
+        self.assertIn('stage=quic-build exit=31', self.detail)
         self.assertEqual((self.root / 'lock-proof').read_text(), 'held\n')
+        # Offline rendering must not restart mosdns before the rest of the
+        # upgrade transaction succeeds; rollback performs the only recovery
+        # restart for a failure after publication.
+        events = (self.root / 'events').read_text().splitlines()
+        self.assertEqual(sum(line == 'restart mosdns.service' for line in events), 1)
 
     def test_restart_failure_restores_files_and_active_disabled_services(self):
         self.assert_rollback('restart')
 
     def test_smart_validation_failure_restores_runtime_and_cache(self):
         self.assert_rollback('smart_validation')
+
+    def test_invalid_offline_rule_cache_reports_failure_and_rolls_back(self):
+        (self.fs / 'etc/5gpn/rules.conf').unlink()
+        self.put('/etc/mosdns/.remote_dns', '22.22.22.22\n')
+        self.put('/etc/mosdns/.local_dns', '101.226.4.6 218.30.118.6 180.76.76.76 119.29.29.29\n')
+        self.put('/etc/mosdns/gfwlist.txt', '')
+        self.put('/etc/mosdns/chinalist.txt', 'example.cn\n')
+        before = self.snapshot()
+        result = self.run_upgrade()
+        self.assertNotEqual(result.returncode, 0, self.detail)
+        self.assertIn('Offline GFWList cache is missing or invalid', self.detail)
+        self.assertIn('stage=offline-dns exit=1', self.detail)
+        self.assertEqual(before, self.snapshot(), self.detail)
+        # Rollback restarts the services that were active before the
+        # transaction, even when validation failed before publication.
+        self.assertIn('restart mosdns.service',
+                      (self.root / 'events').read_text() if (self.root / 'events').exists() else '')
 
     def test_invalid_dns_preflight_never_changes_managed_files(self):
         for name in ('.remote_dns', '.local_dns'):
@@ -174,6 +198,7 @@ printf 'completed\\n'
                 before = self.snapshot()
                 result = self.run_upgrade()
                 self.assertNotEqual(result.returncode, 0, self.detail)
+                self.assertIn('stage=dns-preflight exit=1', self.detail)
                 self.assertEqual(before, self.snapshot())
                 self.assertFalse((self.root / 'events').exists())
                 self.assertFalse(list(self.fs.glob('opt/5gpn/.upgrade-*')))
@@ -190,6 +215,8 @@ printf 'completed\\n'
         for unit in ('sniproxy', 'wa-shim', '5gpn-mihomo@smart'):
             self.assertNotIn('restart ' + unit + '.service', events)
         self.assertIn('restart 5gpn-tgbot.service', events)
+        self.assertEqual([line for line in events.splitlines() if line.startswith('restart mosdns')],
+                         ['restart mosdns.service'])
         self.assertEqual((self.fs / 'var/lib/5gpn-quic/remote-dns').read_text(), '1.1.1.1\n')
         self.assertFalse(list(self.fs.glob('opt/5gpn/.upgrade-*')))
 

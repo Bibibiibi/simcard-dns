@@ -76,6 +76,37 @@ exit 0
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse((self.base / 'restarts').exists())
 
+    def test_offline_still_restarts_for_standalone_domain_changes(self):
+        result = self.run_update('--offline')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.base / 'restarts').read_text(), 'restart\n')
+
+    def test_invalid_offline_cache_reports_which_cache_without_contents(self):
+        for name, label in (('gfwlist.txt', 'GFWList'), ('chinalist.txt', 'ChinaList')):
+            for data in (None, '', 'example.org\n\n', '# comment\nexample.org\n',
+                         'example.org\r\n', '<html>SECRET-SENTINEL</html>\n'):
+                with self.subTest(name=name, data=data):
+                    path = self.dns / name
+                    if data is None:
+                        path.unlink()
+                    else:
+                        path.write_text(data)
+                    before = {p.name: p.read_bytes() for p in self.dns.iterdir()}
+                    result = self.run_update()
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(f'Offline {label} cache is missing or invalid', result.stderr)
+                    self.assertNotIn('SECRET-SENTINEL', result.stderr)
+                    self.assertEqual(before, {p.name: p.read_bytes() for p in self.dns.iterdir()})
+                    self.assertFalse((self.base / 'restarts').exists())
+                    path.write_text('example.org\n')
+
+    def test_empty_and_comment_only_local_extras_do_not_fail(self):
+        for data in ('', '\n', '# comment\n', 'example.net\n\n', 'example.net'):
+            with self.subTest(data=data):
+                (self.dns / 'gfwlist-extra-local.txt').write_text(data)
+                result = self.run_update()
+                self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_invalid_override_never_publishes(self):
         (self.dns / 'domain-overrides.conf').write_text('broken=unknown\n')
         self.assertNotEqual(self.run_update().returncode, 0)

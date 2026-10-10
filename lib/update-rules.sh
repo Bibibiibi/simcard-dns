@@ -335,8 +335,14 @@ if [[ -z "$mode" ]]; then
     update_domain_cache ChinaList "$CHINALIST_URL" CHINALIST_RAW CHINALIST_FILE parse_chinalist
     append_default_rule_domains
 else
-    valid_domain_cache "$GFWLIST_FILE"
-    valid_domain_cache "$CHINALIST_FILE"
+    if ! valid_domain_cache "$GFWLIST_FILE"; then
+        echo "[!] Offline GFWList cache is missing or invalid: $live/gfwlist.txt" >&2
+        exit 1
+    fi
+    if ! valid_domain_cache "$CHINALIST_FILE"; then
+        echo "[!] Offline ChinaList cache is missing or invalid: $live/chinalist.txt" >&2
+        exit 1
+    fi
 fi
 append_local_gfwlist_extras
 sort -u -o "$GFWLIST_FILE" "$GFWLIST_FILE"
