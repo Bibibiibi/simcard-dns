@@ -90,7 +90,6 @@ _GENERATION_LOCK = threading.RLock()
 # single bubble instead of sending a new message every time.
 CONSOLE = {}
 IOS_PAGES = {}
-VERSION = "0.0.1"
 LAST_FAILED_DOT_DOMAIN = {}
 PROXY_URI_RE = re.compile(r"^(ss|vmess|trojan|vless|hysteria2|hy2|tuic|anytls|socks5h|socks5|socks|http|https)://", re.I)
 SUPPORTED_EXIT_LINKS = "ss:// vmess:// trojan:// vless:// hysteria2:// tuic:// anytls:// socks5:// http://"
@@ -368,6 +367,11 @@ def reanchor_console(chat_id, text, keyboard=None, mono=False):
         CONSOLE[chat_id] = new_mid
         if old is not None and old != new_mid:
             background(delete_message, chat_id, old)
+        for key, photo_mid in list(IOS_PAGES.items()):
+            if key[0] == chat_id and isinstance(photo_mid, int):
+                if not delete_message(chat_id, photo_mid):
+                    clear_message_keyboard(chat_id, photo_mid)
+                IOS_PAGES[key] = ("closed", photo_mid)
     return new_mid
 
 
@@ -1620,6 +1624,13 @@ def op_ios_send_inline(cb, generation=None):
                 photo_mid = send_photo(chat_id, png, cap, back_kb("ios_back:%s" % source_mid))
                 if photo_mid is not None:
                     IOS_PAGES[(chat_id, source_mid)] = photo_mid
+                    # Keep the map bounded; closed entries are only duplicate
+                    # protection and are not useful after the latest pages.
+                    entries = [(key, value) for key, value in IOS_PAGES.items()
+                               if key[0] == chat_id]
+                    if len(entries) > 16:
+                        for old_key, old_value in entries[:-16]:
+                            IOS_PAGES.pop(old_key, None)
                     CONSOLE.pop(chat_id, None)
                     if not delete_message(chat_id, source_mid):
                         if not edit_message(chat_id, source_mid,
@@ -1676,7 +1687,7 @@ def ios_back(cb):
 # Keyboards
 # --------------------------------------------------------------------------- #
 def main_menu_text():
-    return "<b>5GPN-X v%s</b>\n选择一个操作：" % VERSION
+    return "选择一个操作："
 
 
 def main_menu():
@@ -2023,7 +2034,26 @@ def handle_callback(cb):
 
     if data == "act:ios":
         page = IOS_PAGES.get((chat_id, cb_mid))
-        if isinstance(page, int):
+        active = any(key[0] == chat_id and isinstance(value, int)
+                     for key, value in IOS_PAGES.items())
+        if isinstance(page, int) or active:
+            answer_callback_async(cb_id)
+            return
+
+    # Reject duplicate/stale Back callbacks before bumping the generation;
+    # otherwise an old QR can cancel an unrelated in-flight operation.
+    if data.startswith("ios_back:"):
+        try:
+            source_mid = int(data.split(":", 1)[1])
+        except (TypeError, ValueError):
+            source_mid = None
+        page = IOS_PAGES.get((chat_id, source_mid))
+        active = any(key[0] == chat_id and isinstance(value, int)
+                     for key, value in IOS_PAGES.items())
+        other_active = any(key[0] == chat_id and isinstance(value, int) and value != cb_mid
+                           for key, value in IOS_PAGES.items())
+        if page == ("closed", cb_mid) or (page is None and active) or other_active or \
+                (isinstance(page, int) and page != cb_mid):
             answer_callback_async(cb_id)
             return
 

@@ -33,7 +33,7 @@
 
 ## 安装
 
-项目版本：**0.0.1**（首次引入补丁版本，历史源码仍用 Git commit 标识；见 [CHANGELOG](CHANGELOG.md)）。
+项目版本：**0.0.2**（见 [CHANGELOG](CHANGELOG.md)）。
 
 安装前先选择并审阅仓库中的完整 commit SHA。不要通过 `main` 分支的 `curl | bash` 直接执行 root 安装器；单文件 `install.sh` 缺少依赖时会拒绝自动下载未固定源码。
 
@@ -44,20 +44,13 @@ git checkout --detach <你已审阅的完整提交SHA>
 sudo bash ./install.sh
 ```
 
-一键安装（先将下列变量替换成你已审阅的 **40 位完整 commit SHA**；引导脚本和源码使用同一提交）：
+一键安装（默认解析本仓库 `main` 的完整提交后再检出；这是对本项目 GitHub `main` 的信任，不代表加密认证）：
 
 ```bash
-COMMIT='替换为已审阅的40位完整提交SHA'
-[[ "$COMMIT" =~ ^[0-9a-fA-F]{40}$ ]] && (
-  set -e
-  launcher="$(mktemp)"
-  trap 'rm -f "$launcher"' EXIT
-  curl -fsSL "https://raw.githubusercontent.com/Xiuyixx/5GPN-X/${COMMIT}/quick-install.sh" -o "$launcher"
-  sudo env PGW_COMMIT="$COMMIT" bash "$launcher"
-)
+curl -fsSL https://raw.githubusercontent.com/Xiuyixx/5GPN-X/main/quick-install.sh | sudo bash
 ```
 
-`quick-install.sh` 要求显式设置 `PGW_COMMIT`，不会静默改用 `main`。默认源码目录是 `/opt/5gpn-source`，运行数据目录仍是 `/opt/5gpn`；旧的非 Git `/opt/5gpn` 不需要删除或改名。自定义 `PGW_SRC_DIR` 时必须使用独立源码目录；已有非 Git 目录或有未提交修改的源码目录会被拒绝覆盖。
+需要固定到已审阅提交时，可额外设置 `PGW_COMMIT`（40 位完整 SHA）；脚本仍会校验检出后的 HEAD。默认源码目录是 `/opt/5gpn-source`，运行数据目录仍是 `/opt/5gpn`；旧的非 Git `/opt/5gpn` 不需要删除或改名。自定义 `PGW_SRC_DIR` 时必须使用独立源码目录；已有非 Git 目录或有未提交修改的源码目录会被拒绝覆盖。完整安装的交互输入会从 `/dev/tty` 读取；无 TTY 时请预先设置所需环境变量。
 
 **已有主机仅更新 Bot/管理脚本**：使用上面的同一固定提交命令，将最后一行改为 `sudo env PGW_COMMIT="$COMMIT" bash "$launcher" --setup-tgbot`。它读取已有 `tgbot.env` 的 Token/管理员 ID（不执行文件内容），保留额外环境设置，更新代码并重启、检查 `5gpn-tgbot`。没有现存 Token 时仍需配置。不要为仅更新 Bot 重跑全量安装：全量安装会重新生成服务配置，不承诺保留所有手工修改；升级前请备份相关配置。
 

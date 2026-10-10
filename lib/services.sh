@@ -582,8 +582,12 @@ read_tgbot_setting() {
 collect_tgbot_settings() {
     local token="${TG_BOT_TOKEN-$(read_tgbot_setting TG_BOT_TOKEN)}"
     local ids="${TG_ADMIN_IDS-$(read_tgbot_setting TG_ADMIN_IDS)}"
-    if [[ -z "$token" && -t 0 ]]; then
-        read -r -p "Telegram Bot Token（留空跳过）: " token
+    if [[ -z "$token" ]]; then
+        if [[ -t 0 ]]; then
+            read -r -p "Telegram Bot Token（留空跳过）: " token
+        elif ( : < /dev/tty ) 2>/dev/null; then
+            read -r -p "Telegram Bot Token（留空跳过）: " token < /dev/tty
+        fi
     fi
     if [[ -z "$token" ]]; then
         TG_BOT_TOKEN=""
@@ -591,10 +595,21 @@ collect_tgbot_settings() {
         TG_BOT_SETTINGS_COLLECTED=1
         return 0
     fi
-    if [[ -z "$ids" && -t 0 ]]; then
-        read -r -p "管理员 Telegram ID: " ids
+    if [[ -z "$ids" ]]; then
+        if [[ -t 0 ]]; then
+            read -r -p "管理员 Telegram ID: " ids
+        elif ( : < /dev/tty ) 2>/dev/null; then
+            read -r -p "管理员 Telegram ID: " ids < /dev/tty
+        fi
     fi
-    ids="$(printf '%s' "$ids" | tr ', ' '\n' | grep -E '^[0-9]+$' | paste -sd ',' - 2>/dev/null || true)"
+    local normalized invalid
+    normalized="$(printf '%s' "$ids" | tr ', ' '\n')"
+    invalid="$(printf '%s\n' "$normalized" | sed '/^$/d' | grep -Ev '^[0-9]+$' || true)"
+    if [[ -n "$invalid" ]]; then
+        err "Invalid Telegram admin ID; existing settings were not changed"
+        return 1
+    fi
+    ids="$(printf '%s\n' "$normalized" | sed '/^$/d' | paste -sd ',' -)"
     if [[ ! "$token" =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]]; then
         err "Invalid Telegram token format; existing settings were not changed"
         return 1
@@ -655,7 +670,13 @@ setup_tgbot() {
     local env_tmp
     env_tmp="$(mktemp "${CONF_DIR}/.tgbot.env.XXXXXX")" || return 1
     if [[ -f "${CONF_DIR}/tgbot.env" ]]; then
-        grep -vE '^(TG_BOT_TOKEN|TG_ADMIN_IDS|MGMT)=' "${CONF_DIR}/tgbot.env" > "$env_tmp" || true
+        local grep_status=0
+        grep -vE '^(TG_BOT_TOKEN|TG_ADMIN_IDS|MGMT)=' "${CONF_DIR}/tgbot.env" > "$env_tmp" || grep_status=$?
+        if (( grep_status > 1 )); then
+            err "Unable to read existing Telegram settings; existing settings were not changed"
+            rm -f "$env_tmp"
+            return 1
+        fi
     fi
     printf '\nTG_BOT_TOKEN=%s\nTG_ADMIN_IDS=%s\nMGMT=%s/bin/5gpn-ctl\n' "$token" "$ids" "$BASE_DIR" >> "$env_tmp"
     chmod 600 "$env_tmp"

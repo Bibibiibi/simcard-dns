@@ -2,7 +2,8 @@
 #
 # One-click installer for 5gpn — downloads the repo and runs install.sh.
 #
-#   See README for the pinned launcher command; launcher and PGW_COMMIT must match.
+#   With no PGW_COMMIT, resolve the current main commit before checkout.
+#   PGW_COMMIT may be set explicitly for a reviewed immutable install.
 #
 # (Avoid `sudo bash <(curl ...)`: newer sudo closes the process-substitution
 #  fd, which fails as "/dev/fd/63: No such file or directory" on e.g. Debian 13.)
@@ -24,12 +25,7 @@ ok()   { echo -e "${GREEN}[OK]${NC}   $*"; }
 err()  { echo -e "${RED}[ERR]${NC}  $*" >&2; }
 
 if [[ $EUID -ne 0 ]]; then
-    err "Run the pinned launcher as root with PGW_COMMIT (see README)"
-    exit 1
-fi
-
-if [[ ! "$COMMIT" =~ ^[0-9a-fA-F]{40}$ ]]; then
-    err "PGW_COMMIT must be an explicit 40-hex trusted commit (refusing floating branch installs)"
+    err "Run the installer as root (for example: curl ... | sudo bash)"
     exit 1
 fi
 
@@ -41,6 +37,17 @@ pkg_install() {
 }
 
 command -v git >/dev/null 2>&1 || pkg_install git || { err "git is required"; exit 1; }
+
+if [[ -z "$COMMIT" ]]; then
+    COMMIT="$(git ls-remote "https://github.com/${REPO}.git" refs/heads/main | awk 'NR==1 {print $1}')" || {
+        err "Unable to resolve main from GitHub"
+        exit 1
+    }
+fi
+if [[ ! "$COMMIT" =~ ^[0-9a-fA-F]{40}$ ]]; then
+    err "Unable to resolve a complete main commit; set PGW_COMMIT to a 40-hex commit and retry"
+    exit 1
+fi
 
 info "Downloading ${REPO}@${COMMIT} into ${SOURCE_DIR} ..."
 if [[ -d "${SOURCE_DIR}/.git" ]]; then
@@ -67,6 +74,11 @@ fi
 ok "Source ready at ${SOURCE_DIR}; existing /opt/5gpn runtime data was not removed"
 
 cd "${SOURCE_DIR}"
-chmod +x install.sh quick-install.sh lib/update-rules.sh 2>/dev/null || true
-info "Launching installer..."
+# Do not mutate the checked-out source tree; install.sh is invoked explicitly.
+info "Launching installer at ${COMMIT}..."
+# Only full installs consume interactive stdin. Management commands may use
+# stdin as their payload, and must retain it unchanged.
+if [[ $# -eq 0 && ! -t 0 ]] && ( : < /dev/tty ) 2>/dev/null; then
+    exec bash ./install.sh < /dev/tty
+fi
 exec bash ./install.sh "$@"

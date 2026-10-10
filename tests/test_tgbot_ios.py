@@ -148,6 +148,18 @@ class IosQrFlowTest(unittest.TestCase):
         self.assertEqual(self.methods("photo"), [])
         self.assertIn(300, self.existing)
 
+    def test_stale_back_does_not_bump_generation_or_restore_menu(self):
+        self.click("act:ios")
+        generation = self.bot._chat_generation(91)
+        self.bot.IOS_PAGES[(91, 999)] = 702
+        self.click("ios_back:300", 701)
+        self.assertEqual(generation, self.bot._chat_generation(91))
+        self.assertEqual(len(self.methods("sendMessage")), 0)
+
+    def test_menu_has_no_version_label(self):
+        self.assertEqual(self.bot.main_menu_text(), "选择一个操作：")
+        self.assertNotIn("0.0.1", self.bot.main_menu_text())
+
     def test_missing_source_on_back_still_sends_menu(self):
         self.existing.clear()
         self.existing.add(701)
