@@ -18,6 +18,9 @@ REPO="Xiuyixx/5GPN-X"
 # installer deploys into /opt/5gpn and never removes an existing runtime tree.
 SOURCE_DIR="${PGW_SRC_DIR:-/opt/5gpn-source}"
 COMMIT="${PGW_COMMIT:-}"
+RUNTIME_DIR="/opt/5gpn"
+MARKER="${RUNTIME_DIR}/.installed-commit"
+ATTEMPT="${RUNTIME_DIR}/.install-attempt"
 
 RED='\033[0;31m'; BLUE='\033[0;34m'; GREEN='\033[0;32m'; NC='\033[0m'
 info() { echo -e "${BLUE}[INFO]${NC} $*"; }
@@ -36,6 +39,18 @@ pkg_install() {
     else return 1; fi
 }
 
+# Management commands are not install/upgrade requests, even when offline.
+if [[ $# -gt 0 && -f "${RUNTIME_DIR}/bin/5gpn-ctl" ]]; then
+    exec bash "${RUNTIME_DIR}/bin/5gpn-ctl" "$@"
+fi
+# Never check out source inside the live data tree (including symlink aliases).
+source_real="$(realpath -m "$SOURCE_DIR")"
+runtime_real="$(realpath -m "$RUNTIME_DIR")"
+if [[ "$source_real" == "$runtime_real" || "$source_real" == "$runtime_real/"* || "$runtime_real" == "$source_real/"* ]]; then
+    err "Source and runtime directories must be separate"
+    exit 1
+fi
+
 command -v git >/dev/null 2>&1 || pkg_install git || { err "git is required"; exit 1; }
 
 if [[ -z "$COMMIT" ]]; then
@@ -47,6 +62,25 @@ fi
 if [[ ! "$COMMIT" =~ ^[0-9a-fA-F]{40}$ ]]; then
     err "Unable to resolve a complete main commit; set PGW_COMMIT to a 40-hex commit and retry"
     exit 1
+fi
+
+COMMIT="${COMMIT,,}"
+export PGW_COMMIT="$COMMIT"
+mode=install
+if [[ $# -eq 0 ]]; then
+    # A checkout alone is NOT an installation. Recognize deployed runtime
+    # state, including historical non-Git installs without a version marker.
+    if [[ -f "$MARKER" || -f "$ATTEMPT" || -f "${RUNTIME_DIR}/bin/5gpn-ctl" || -s "${RUNTIME_DIR}/etc/.domain" ]]; then
+        mode=upgrade
+        installed="$(cat "$MARKER" 2>/dev/null || true)"
+        if [[ "$installed" == "$COMMIT" && ! -e "$ATTEMPT" ]]; then
+            ok "已是当前版本 ${COMMIT}，无需升级。"
+            exit 0
+        fi
+        info "检测到已有安装（${installed:-legacy/unversioned}），保留配置并升级。"
+    else
+        info "未检测到已有安装，开始首次安装。"
+    fi
 fi
 
 info "Downloading ${REPO}@${COMMIT} into ${SOURCE_DIR} ..."
@@ -74,11 +108,25 @@ fi
 ok "Source ready at ${SOURCE_DIR}; existing /opt/5gpn runtime data was not removed"
 
 cd "${SOURCE_DIR}"
-# Do not mutate the checked-out source tree; install.sh is invoked explicitly.
-info "Launching installer at ${COMMIT}..."
-# Only full installs consume interactive stdin. Management commands may use
-# stdin as their payload, and must retain it unchanged.
-if [[ $# -eq 0 && ! -t 0 ]] && ( : < /dev/tty ) 2>/dev/null; then
-    exec bash ./install.sh < /dev/tty
+# Arguments retain stdin verbatim and never create installation markers.
+if [[ $# -gt 0 ]]; then
+    exec bash ./install.sh "$@"
 fi
-exec bash ./install.sh "$@"
+mkdir -p "$RUNTIME_DIR"
+umask 077
+printf 'mode=%s\ntarget=%s\nstarted=%s\n' "$mode" "$COMMIT" "$(date -u +%FT%TZ)" > "$ATTEMPT"
+trap 'rc=$?; if (( rc != 0 )); then err "安装/升级未完成；保留旧版本标记。诊断: $ATTEMPT 、${RUNTIME_DIR}/.upgrade-attempt 或 /var/log/5gpn-install.log；检查备份后重试。"; fi' EXIT
+info "Launching ${mode} at ${COMMIT}..."
+if [[ "$mode" == upgrade ]]; then
+    bash ./install.sh --upgrade < /dev/null
+elif [[ ! -t 0 ]] && ( : < /dev/tty ) 2>/dev/null; then
+    bash ./install.sh < /dev/tty
+else
+    bash ./install.sh
+fi
+# A resolved checkout is not a successful deployment. Publish only on success.
+marker_tmp="$(mktemp "${MARKER}.XXXXXX")"
+printf '%s\n' "$COMMIT" > "$marker_tmp"
+mv -f "$marker_tmp" "$MARKER"
+rm -f "$ATTEMPT"
+ok "${mode} 完成，版本提交 ${COMMIT}"

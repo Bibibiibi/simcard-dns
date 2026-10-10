@@ -33,34 +33,19 @@
 
 ## 安装
 
-项目版本：**0.0.2**（见 [CHANGELOG](CHANGELOG.md)）。
+项目版本：**0.0.3**（见 [CHANGELOG](CHANGELOG.md)）。
 
-安装前先选择并审阅仓库中的完整 commit SHA。不要通过 `main` 分支的 `curl | bash` 直接执行 root 安装器；单文件 `install.sh` 缺少依赖时会拒绝自动下载未固定源码。
-
-```bash
-git clone https://github.com/Xiuyixx/5GPN-X.git
-cd 5GPN-X
-git checkout --detach <你已审阅的完整提交SHA>
-sudo bash ./install.sh
-```
-
-一键安装（默认解析本仓库 `main` 的完整提交后再检出；这是对本项目 GitHub `main` 的信任，不代表加密认证）：
+一键安装/升级（自动识别首次安装、历史非 Git `/opt/5gpn` 安装和旧提交；升级保留 domain、DNS、exits、rules、证书与 Bot 状态；当前版本则不重复安装）：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Xiuyixx/5GPN-X/main/quick-install.sh | sudo bash
 ```
 
-需要固定到已审阅提交时，可额外设置 `PGW_COMMIT`（40 位完整 SHA）；脚本仍会校验检出后的 HEAD。默认源码目录是 `/opt/5gpn-source`，运行数据目录仍是 `/opt/5gpn`；旧的非 Git `/opt/5gpn` 不需要删除或改名。自定义 `PGW_SRC_DIR` 时必须使用独立源码目录；已有非 Git 目录或有未提交修改的源码目录会被拒绝覆盖。完整安装的交互输入会从 `/dev/tty` 读取；无 TTY 时请预先设置所需环境变量。
+脚本默认解析本仓库 `main` 的完整提交后再检出；这是对本项目 GitHub `main` 的信任，不代表加密认证。安装成功后在 `/opt/5gpn/.installed-commit` 写入真实部署提交，升级失败则留下 `.install-attempt` 和备份/日志供诊断，不会伪装成成功。需要固定到已审阅提交时，可额外设置 `PGW_COMMIT`（40 位完整 SHA）；脚本仍会校验检出后的 HEAD。默认源码目录是 `/opt/5gpn-source`，运行数据目录仍是 `/opt/5gpn`；旧的非 Git `/opt/5gpn` 不需要删除或改名。自定义 `PGW_SRC_DIR` 时必须使用独立源码目录；已有非 Git 目录或有未提交修改的源码目录会被拒绝覆盖。完整安装的交互输入会从 `/dev/tty` 读取；无 TTY 时请预先设置所需环境变量。`--status` 等管理参数只转发给已有运行目录的管理 CLI，不会触发安装/升级。
 
-**已有主机仅更新 Bot/管理脚本**：使用上面的同一固定提交命令，将最后一行改为 `sudo env PGW_COMMIT="$COMMIT" bash "$launcher" --setup-tgbot`。它读取已有 `tgbot.env` 的 Token/管理员 ID（不执行文件内容），保留额外环境设置，更新代码并重启、检查 `5gpn-tgbot`。没有现存 Token 时仍需配置。不要为仅更新 Bot 重跑全量安装：全量安装会重新生成服务配置，不承诺保留所有手工修改；升级前请备份相关配置。
+升级前会在 `/var/backups/5gpn/upgrade.*` 保存 root-only 配置/代码备份及独立日志。升级不重新运行首次安装向导，不申请新证书，不重建域名/DNS/路由配置，也不重写 `tgbot.env` 或读取执行其中内容；自定义 `TG_STATE_FILE` 保持原位。升级会短暂重启原先正在运行的服务，原先停用的可选服务不会被启用。失败不会自动回滚已部署程序；旧提交标记保持不变，请按输出的备份和日志诊断、修复后重跑同一命令。备份含私钥和 Token，请妥善保管。
 
-非交互安装（无 TTY 时必须设置 `DOMAIN`）：
-
-```bash
-export DOMAIN="dns.example.com"
-export EMAIL="admin@example.com"
-sudo env DOMAIN="$DOMAIN" EMAIL="$EMAIL" bash ./install.sh
-```
+仅发现源码目录不算已安装。存在运行配置但不完整时安全拒绝升级，避免误跑首次向导覆盖配置。这里的“当前版本”以成功部署的完整提交 SHA 判定，而非仅比较展示版本号；网络/分支解析失败会退出而不是假称无需升级。升级保留现有配置布局，不自动迁移古老 dnsdist-only 部署或所有手工修改的 systemd 配置。首次安装无 TTY 时需要预先向安装进程提供 `DOMAIN`（可选 `EMAIL`）；日常管理使用下面的运行目录 CLI。
 
 安装前请先把域名 A 记录指向服务器公网 IP；脚本输入域名后会自动验证解析，无需额外确认。已有证书会直接复用，没有证书时才申请 Let's Encrypt 证书。
 

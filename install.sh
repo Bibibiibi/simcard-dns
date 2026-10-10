@@ -100,6 +100,7 @@ Usage: $0 [OPTION]
 
 Options:
   (none)         Full interactive installation
+  --upgrade      Upgrade deployed code, preserving configuration/data
   --status       Show service status
   --update-rules Update GFWList/ChinaList and reload mosdns
   --renew-cert   Force renew certificates and reload services
@@ -224,6 +225,7 @@ install_stage_deploy() {
 }
 
 install_stage_finalize() {
+    install_ctl_entrypoint || return $?
     start_services || return $?
     setup_schedules || return $?
     setup_tgbot || return $?
@@ -278,7 +280,73 @@ EOF
     echo ""
 }
 
+# Code-only deployment deliberately avoids configuration-generating first-run
+# helpers. Existing domain/DNS, routing, certificates and bot state stay in place.
+upgrade_code() {
+    install_ctl_entrypoint
+    local name
+    for name in tgbot ios-http wa-shim mihomo-exit-config mihomo-router-config rules-import; do
+        install -m 0755 "${LIB_DIR}/${name}.py" "${BASE_DIR}/bin/${name}.py"
+    done
+    install -m 0755 "${LIB_DIR}/update-rules.sh" /usr/local/bin/update-mosdns-rules.sh
+    mkdir -p /etc/letsencrypt/renewal-hooks/deploy
+    install -m 0755 "${LIB_DIR}/renew-hook.sh" /etc/letsencrypt/renewal-hooks/deploy/99-reload-mosdns.sh
+    # Unlike install_quic_proxy, rebuild even when the old executable exists.
+    export PATH="$PATH:/usr/local/go/bin"
+    local build_dir
+    build_dir="$(mktemp -d "${BASE_DIR}/.upgrade-build.XXXXXX")"
+    cp "${LIB_DIR}/quic-proxy.go" "$build_dir/"
+    (cd "$build_dir" && go build -ldflags="-s -w" -o quic-proxy quic-proxy.go)
+    install -m 0755 "$build_dir/quic-proxy" "${BASE_DIR}/bin/quic-proxy"
+    rm -rf "$build_dir"
+    # Reuse the existing pinned binary installer; it does not edit DNS config.
+    install_mosdns_binary
+    local unit
+    for unit in mosdns sniproxy quic-proxy wa-shim 5gpn-tgbot; do
+        if systemctl cat "$unit.service" >/dev/null 2>&1; then
+            # Do not enable an intentionally disabled/stopped optional service.
+            if systemctl is-active --quiet "$unit.service"; then
+                systemctl restart "$unit.service"
+                systemctl is-active --quiet "$unit.service"
+            fi
+        fi
+    done
+}
+
+main_upgrade() {
+    check_root
+    # Refuse partial/unrecognized installations rather than run a fresh wizard.
+    if [[ ! -s "${CONF_DIR}/.domain" || ! -s /etc/mosdns/config.yaml || ! -x "${BASE_DIR}/bin/quic-proxy" ]]; then
+        err "现有安装不完整；升级未修改配置。请检查安装日志并修复安装后重试。"
+        return 1
+    fi
+    local backup
+    umask 077
+    mkdir -p /var/backups/5gpn
+    backup="$(mktemp -d /var/backups/5gpn/upgrade.XXXXXX)"
+    # Archive code and all managed config; do not read/execute tgbot.env or
+    # touch its custom TG_STATE_FILE. State outside these paths is unchanged.
+    local paths=() path
+    for path in "$BASE_DIR/bin" "$CONF_DIR" /etc/5gpn /etc/wireguard /etc/mosdns \
+        /etc/sniproxy.conf /etc/letsencrypt /var/lib/5gpn /etc/systemd/system \
+        /usr/local/bin/update-mosdns-rules.sh /usr/local/bin/mosdns; do
+        [[ ! -e "$path" ]] || paths+=("${path#/}")
+    done
+    tar -C / -czf "$backup/config-code.tar.gz" "${paths[@]}"
+    INSTALL_LOG="$backup/upgrade.log"
+    init_install_log
+    printf 'target=%s\nbackup=%s\n' "${PGW_COMMIT:-unknown}" "$backup" > "${BASE_DIR}/.upgrade-attempt"
+    info "升级备份与日志: $backup（含敏感配置，仅 root 可读）"
+    # Call directly, not inside an `if` function context that suppresses -e.
+    run_install_step "更新程序并检查已有服务" upgrade_code
+    rm -f "${BASE_DIR}/.upgrade-attempt"
+    ok "升级完成；已有配置和状态未重新生成。"
+}
+
 case "${1:-}" in
+    --upgrade)
+        main_upgrade
+        ;;
     --status)
         get_public_ip 2>/dev/null || true
         show_status
