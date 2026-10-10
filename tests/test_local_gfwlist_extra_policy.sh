@@ -4,7 +4,7 @@ set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 rules="$(cat "${root}/lib/update-rules.sh")"
-readme="$(cat "${root}/README.md")"
+guide="$(cat "${root}/docs/GUIDE.md")"
 
 assert_contains() {
     local haystack="$1"
@@ -21,6 +21,6 @@ assert_contains "${rules}" 'GFWLIST_EXTRA_FILE="${BASE_DIR}/gfwlist-extra-local.
 assert_contains "${rules}" 'append_local_gfwlist_extras()' 'local extra append function'
 assert_contains "${rules}" 'printf '\''%s\n'\'' "$domain"' 'append valid local domains to the mosdns domain set'
 assert_contains "${rules}" 'sort -u -o "$GFWLIST_FILE" "$GFWLIST_FILE"' 'dedupe the merged mosdns domain set'
-assert_contains "${readme}" '/etc/mosdns/gfwlist-extra-local.txt' 'operator documentation for local extras'
+assert_contains "${guide}" '/etc/mosdns/gfwlist-extra-local.txt' 'operator documentation for local extras'
 
 echo "local GFWList extra policy markers OK"

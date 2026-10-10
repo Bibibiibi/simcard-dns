@@ -4,7 +4,7 @@ $root = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
 $installSources = @("install.sh", "lib/common.sh", "lib/dns.sh", "lib/cert.sh", "lib/services.sh", "lib/exits.sh", "lib/rules.sh", "lib/uninstall.sh")
 $install = ($installSources | ForEach-Object { Get-Content -Path (Join-Path $root $_) -Raw -Encoding UTF8 }) -join "`n"
 $sniproxy = Get-Content -Path (Join-Path $root "lib/sniproxy.conf") -Raw -Encoding UTF8
-$readme = Get-Content -Path (Join-Path $root "README.md") -Raw -Encoding UTF8
+$guide = Get-Content -Path (Join-Path $root "docs/GUIDE.md") -Raw -Encoding UTF8
 
 function Assert-Contains {
     param(
@@ -48,8 +48,8 @@ Assert-Contains $install 'render_sniproxy_dns' 'installer renders sniproxy resol
 Assert-Contains $install 'REMOTE_DNS' 'installer accepts remote DNS variable'
 Assert-Contains $install '/etc/mosdns/.sniproxy_dns' 'installer saves sniproxy DNS config'
 Assert-Contains $install '__SNIPROXY_NAMESERVERS__' 'installer replaces sniproxy DNS placeholder'
-Assert-Contains $readme 'sniproxy' 'README documents sniproxy'
-Assert-Contains $readme '/etc/sniproxy.conf' 'README documents reverse proxy DNS config'
-Assert-Contains $readme 'ipv4_only' 'README documents IPv4-only sniproxy resolver'
+Assert-Contains $guide 'sniproxy' 'guide documents sniproxy'
+Assert-Contains $guide '/etc/sniproxy.conf' 'guide documents reverse proxy DNS config'
+Assert-Contains $guide 'ipv4_only' 'guide documents IPv4-only sniproxy resolver'
 
 Write-Output "sniproxy overseas resolver markers OK"

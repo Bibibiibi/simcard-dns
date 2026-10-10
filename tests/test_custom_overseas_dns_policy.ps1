@@ -5,7 +5,7 @@ $installSources = @("install.sh", "lib/common.sh", "lib/dns.sh", "lib/cert.sh", 
 $install = ($installSources | ForEach-Object { Get-Content -Path (Join-Path $root $_) -Raw -Encoding UTF8 }) -join "`n"
 $template = Get-Content -Path (Join-Path $root "lib/mosdns.yaml.template") -Raw -Encoding UTF8
 $rules = Get-Content -Path (Join-Path $root "lib/update-rules.sh") -Raw -Encoding UTF8
-$readme = Get-Content -Path (Join-Path $root "README.md") -Raw -Encoding UTF8
+$guide = Get-Content -Path (Join-Path $root "docs/GUIDE.md") -Raw -Encoding UTF8
 
 function Assert-Contains {
     param(
@@ -35,8 +35,8 @@ Assert-Contains $rules '__REMOTE_PRIMARY_UPSTREAMS__' 'rule updater replaces rem
 Assert-Contains $rules 'next((item for item in fallbacks if item != items[0])' 'single custom upstream gets an independent fallback'
 Assert-Contains $install 'Encrypted or scheme DNS upstreams are unsupported by all consumers' 'unsupported encrypted upstream rejection'
 Assert-Contains $install 'custom ports are unsupported by sniproxy/quic-proxy' 'unsupported custom port rejection'
-Assert-Contains $readme 'REMOTE_DNS' 'README documents remote DNS variable'
-Assert-Contains $readme 'LOCAL_DNS' 'README documents local DNS variable'
-Assert-Contains $readme 'DNS_UPSTREAMS' 'README documents legacy DNS alias'
+Assert-Contains $guide 'REMOTE_DNS' 'guide documents remote DNS variable'
+Assert-Contains $guide 'LOCAL_DNS' 'guide documents local DNS variable'
+Assert-Contains $guide 'DNS_UPSTREAMS' 'guide documents legacy DNS alias'
 
 Write-Output "custom DNS markers OK"

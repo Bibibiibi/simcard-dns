@@ -275,8 +275,7 @@ for _mod in common dns cert services exits rules uninstall; do
 done
 unset _mod _modf
 
-# Host firewall & kernel tuning helpers live in lib/host-setup.sh to keep this
-# script below the 128 KiB single-argument limit of `bash -c "$(curl ...)"`.
+# Host firewall and kernel tuning are isolated from component deployment.
 if [[ -f "${LIB_DIR}/host-setup.sh" ]]; then
     # shellcheck source=lib/host-setup.sh
     . "${LIB_DIR}/host-setup.sh"
@@ -365,8 +364,8 @@ Environment variables (for non-interactive use):
                  manages the project's own egress-marking rules; auto adds the
                  needed allow rules to UFW/firewalld/nft/iptables without
                  flushing anything; managed fully owns the INPUT firewall
-                 (always allowing every detected SSH port). Hosts upgraded from
-                 older releases that already managed the firewall stay managed.
+                 (always allowing every detected SSH port). Historical managed
+                 settings do not opt in; managed must be explicitly requested.
   PGW_TUNING     essential (default) | performance. essential applies only the
                  sysctls the gateway needs (ip_forward, rp_filter, BBR when
                  available); performance applies the legacy aggressive tuning.
