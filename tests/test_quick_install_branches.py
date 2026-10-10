@@ -36,7 +36,8 @@ case "$*" in
     [[ "${FAIL_REF:-0}" != 1 ]] || exit 1
     [[ "${EMPTY_REF:-0}" != 1 ]] || exit 0
     printf '%s refs/heads/main\\n' "$TEST_SHA";;
-  clone*) mkdir -p "$PGW_SRC_DIR/.git"; cp "$TEST_BASE/fixture.sh" "$PGW_SRC_DIR/install.sh";;
+  clone*) mkdir -p "${@: -1}/.git"; cp "$TEST_BASE/fixture.sh" "${@: -1}/install.sh";;
+  *status*) [[ "${DIRTY:-0}" != 1 ]] || printf ' M install.sh\\n';;
   *rev-parse*) echo "$TEST_SHA";;
 esac
 ''')
@@ -106,6 +107,27 @@ exit "${FAIL_INSTALL:-0}"
         self.assertFalse((self.base / "git.calls").exists())
         self.assertEqual((self.base / "input").read_text(), "payload\n")
         self.assertFalse((self.runtime / ".installed-commit").exists())
+
+    def test_dirty_checkout_is_archived_before_clean_checkout(self):
+        self.source.mkdir()
+        (self.source / ".git").mkdir()
+        (self.source / "manual-edit.txt").write_text("keep me\\n")
+        result = self.run_launcher(DIRTY="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.source / "install.sh").read_text(), (self.base / "fixture.sh").read_text())
+        backups = list(self.base.glob("source.backup-*/source"))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual((backups[0] / "manual-edit.txt").read_text(), "keep me\\n")
+        self.assertTrue((backups[0] / ".git").is_dir())
+
+    def test_non_git_source_is_protected(self):
+        self.source.mkdir()
+        (self.source / "manual-edit.txt").write_text("keep me\\n")
+        result = self.run_launcher()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not a git checkout", result.stderr)
+        self.assertEqual((self.source / "manual-edit.txt").read_text(), "keep me\\n")
+        self.assertFalse(list(self.base.glob("source.backup-*/source")))
 
     def test_checkout_alone_is_fresh(self):
         (self.source / ".git").mkdir(parents=True)

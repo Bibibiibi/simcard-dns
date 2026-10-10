@@ -15,6 +15,9 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 [[ "$quick" == *'< /dev/tty'* ]] || fail "first install must use /dev/tty when piped"
 [[ "$quick" == *'if [[ $# -gt 0 ]]'* && "$quick" == *'exec bash ./install.sh "$@"'* ]] || fail "management arguments must retain stdin"
 [[ "$quick" == *'Source and runtime directories must be separate'* ]] || fail "source/runtime collision guard missing"
+[[ "$quick" == *'Local source changes found'* && "$quick" == *'Previous source preserved'* ]] || fail "dirty source archive path missing"
+[[ "$quick" == *'not a git checkout; refusing to remove it'* ]] || fail "non-git source protection missing"
+[[ "$quick" == *'Source path must be absolute'* ]] || fail "source path safety guard missing"
 # `--status` and other management args are dispatched before resolution only
 # when the installed self-contained CLI exists; they never select upgrade mode.
 [[ "$quick" != *'--status)"'* ]] || fail "quick installer must not own status branch"

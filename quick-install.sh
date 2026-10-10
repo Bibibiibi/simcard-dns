@@ -45,6 +45,7 @@ if [[ $# -gt 0 && -f "${RUNTIME_DIR}/bin/5gpn-ctl" ]]; then
 fi
 # Never check out source inside the live data tree (including symlink aliases).
 source_real="$(realpath -m "$SOURCE_DIR")"
+source_nominal="$(realpath -m -s "$SOURCE_DIR")"
 runtime_real="$(realpath -m "$RUNTIME_DIR")"
 if [[ "$source_real" == "$runtime_real" || "$source_real" == "$runtime_real/"* || "$runtime_real" == "$source_real/"* ]]; then
     err "Source and runtime directories must be separate"
@@ -84,25 +85,88 @@ if [[ $# -eq 0 ]]; then
 fi
 
 info "Downloading ${REPO}@${COMMIT} into ${SOURCE_DIR} ..."
+# Reject ambiguous paths rather than rename a symlink target or a traversal.
+if [[ "$SOURCE_DIR" != /* || "/$SOURCE_DIR/" == */../* || "/$SOURCE_DIR/" == */./* ||
+      "$source_nominal" != "$source_real" ]]; then
+    err "Source path must be absolute and must not contain symlinks or traversal"
+    exit 1
+fi
+SOURCE_DIR="$source_real"
+# Renames are safe only within a trusted parent. Check ancestors too, allowing
+# sticky directories such as /tmp (the immediate parent must still be private).
+parent="$(dirname -- "$SOURCE_DIR")"
+check_parent="$parent"
+while [[ "$check_parent" != / ]]; do
+    if [[ -d "$check_parent" ]]; then
+        owner="$(stat -c %u -- "$check_parent")"
+        permissions="$(stat -c %a -- "$check_parent")"
+        if [[ "$owner" != "$EUID" ]] ||
+           { (( (8#$permissions & 0022) != 0 )) &&
+              { [[ "$check_parent" == "$parent" ]] || (( (8#$permissions & 01000) == 0 )); }; }; then
+            err "Source parent must be root-owned and not writable by other users: $check_parent"
+            exit 1
+        fi
+    fi
+    check_parent="$(dirname -- "$check_parent")"
+done
+
+stage_source() {
+    local stage
+    mkdir -p "$(dirname -- "$SOURCE_DIR")" || return 1
+    stage="$(mktemp -d "${SOURCE_DIR}.staging.XXXXXX")" || return 1
+    # The staging checkout is disposable; the existing source is not touched
+    # until clone, checkout, and commit verification have all succeeded.
+    if ! git clone --no-checkout "https://github.com/${REPO}.git" "$stage" >&2 ||
+       ! git -C "$stage" checkout --quiet --detach "$COMMIT" ||
+       [[ "$(git -C "$stage" rev-parse HEAD)" != "${COMMIT,,}" ]]; then
+        rm -rf -- "$stage"
+        err "Unable to prepare a clean source checkout; existing source was preserved"
+        return 1
+    fi
+    printf '%s\n' "$stage"
+}
+
+replace_source_atomically() {
+    local stage="$1" backup
+    # A private, unique container prevents collisions without overwriting any
+    # backup. Moving into it is a same-filesystem atomic rename; retain modes,
+    # ownership and ignored files inside, protected by the root-only container.
+    if ! backup="$(mktemp -d "${SOURCE_DIR}.backup-$(date -u +%Y%m%dT%H%M%SZ).XXXXXX")"; then
+        err "Unable to reserve source backup; old source unchanged; prepared checkout: $stage"
+        return 1
+    fi
+    info "Preserving previous source at ${backup}/source (retained even if interrupted)"
+    if ! mv -T -- "$SOURCE_DIR" "$backup/source"; then
+        err "Unable to archive existing source; old source unchanged; prepared checkout: $stage"
+        return 1
+    fi
+    if mv -T -- "$stage" "$SOURCE_DIR"; then
+        info "Previous source preserved at ${backup}/source"
+        return 0
+    fi
+    # Do not replace a path created by another process during the failure.
+    err "Unable to publish clean source; old source preserved at ${backup}/source; prepared checkout: $stage"
+
+    return 1
+}
+
 if [[ -d "${SOURCE_DIR}/.git" ]]; then
     info "Existing source checkout found; checking out trusted commit..."
-    source_status="$(git -C "${SOURCE_DIR}" status --porcelain --untracked-files=all)"
+    source_status="$(git -C "${SOURCE_DIR}" status --porcelain --untracked-files=all --ignored)"
     if [[ -n "$source_status" ]]; then
-        err "Existing source tree has local changes; refusing to overwrite it"
-        exit 1
+        info "Local source changes found; preparing a clean checkout and archiving the old tree"
+        stage="$(stage_source)" || exit 1
+        replace_source_atomically "$stage" || exit 1
+    else
+        git -C "${SOURCE_DIR}" fetch "https://github.com/${REPO}.git" "$COMMIT" --quiet
+        git -C "${SOURCE_DIR}" checkout --quiet --detach "$COMMIT"
     fi
-    git -C "${SOURCE_DIR}" fetch "https://github.com/${REPO}.git" "$COMMIT" --quiet
-    git -C "${SOURCE_DIR}" checkout --quiet --detach "$COMMIT"
+elif [[ -e "${SOURCE_DIR}" ]]; then
+    err "Source destination exists but is not a git checkout; refusing to remove it"
+    exit 1
 else
-    if [[ -e "${SOURCE_DIR}" ]]; then
-        err "Source destination exists but is not a git checkout; refusing to remove it"
-        exit 1
-    fi
-    if ! git clone --no-checkout "https://github.com/${REPO}.git" "${SOURCE_DIR}"; then
-        err "git clone failed. Check network access to github.com."
-        exit 1
-    fi
-    git -C "${SOURCE_DIR}" checkout --quiet --detach "$COMMIT"
+    stage="$(stage_source)" || exit 1
+    mv -T -- "$stage" "$SOURCE_DIR"
 fi
 [[ "$(git -C "${SOURCE_DIR}" rev-parse HEAD)" == "${COMMIT,,}" ]] || { err "Commit verification failed"; exit 1; }
 ok "Source ready at ${SOURCE_DIR}; existing /opt/5gpn runtime data was not removed"
