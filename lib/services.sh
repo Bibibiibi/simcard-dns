@@ -563,9 +563,25 @@ regenerate_ios_profile() {
     generate_ios_profile
 }
 
+read_tgbot_setting() {
+    # Parse only literal assignment values; NEVER source an EnvironmentFile.
+    local key="$1" line value=""
+    [[ -f "${CONF_DIR}/tgbot.env" ]] || return 0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        if [[ "$line" == "${key}="* ]]; then
+            value="${line#*=}"
+            value="${value%$'\r'}"
+            if [[ "$value" == \"*\" || "$value" == \'*\' ]]; then
+                value="${value:1:${#value}-2}"
+            fi
+        fi
+    done < "${CONF_DIR}/tgbot.env"
+    printf '%s' "$value"
+}
+
 collect_tgbot_settings() {
-    local token="${TG_BOT_TOKEN:-}"
-    local ids="${TG_ADMIN_IDS:-}"
+    local token="${TG_BOT_TOKEN-$(read_tgbot_setting TG_BOT_TOKEN)}"
+    local ids="${TG_ADMIN_IDS-$(read_tgbot_setting TG_ADMIN_IDS)}"
     if [[ -z "$token" && -t 0 ]]; then
         read -r -p "Telegram Bot Token（留空跳过）: " token
     fi
@@ -579,6 +595,10 @@ collect_tgbot_settings() {
         read -r -p "管理员 Telegram ID: " ids
     fi
     ids="$(printf '%s' "$ids" | tr ', ' '\n' | grep -E '^[0-9]+$' | paste -sd ',' - 2>/dev/null || true)"
+    if [[ ! "$token" =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]]; then
+        err "Invalid Telegram token format; existing settings were not changed"
+        return 1
+    fi
     TG_BOT_TOKEN="$token"
     TG_ADMIN_IDS="$ids"
     TG_BOT_SETTINGS_COLLECTED=1
@@ -613,7 +633,7 @@ install_ctl_entrypoint() {
 }
 
 setup_tgbot() {
-    [[ "${TG_BOT_SETTINGS_COLLECTED:-0}" == "1" ]] || collect_tgbot_settings
+    [[ "${TG_BOT_SETTINGS_COLLECTED:-0}" == "1" ]] || collect_tgbot_settings || return $?
     local token="${TG_BOT_TOKEN:-}"
     local ids="${TG_ADMIN_IDS:-}"
     if [[ -z "$token" ]]; then
@@ -627,14 +647,19 @@ setup_tgbot() {
         err "tgbot.py not found in ${LIB_DIR}"
         return 1
     fi
-    install -m 0755 "${LIB_DIR}/tgbot.py" "${BASE_DIR}/bin/tgbot.py"
-    install_ctl_entrypoint
+    install -m 0755 "${LIB_DIR}/tgbot.py" "${BASE_DIR}/bin/tgbot.py" || return $?
+    install_ctl_entrypoint || return $?
     mkdir -p "${CONF_DIR}"
-    cat > "${CONF_DIR}/tgbot.env" <<EOF
-TG_BOT_TOKEN=${token}
-TG_ADMIN_IDS=${ids}
-MGMT=${BASE_DIR}/bin/5gpn-ctl
-EOF
+    # Preserve optional environment settings (e.g. TG_STATE_FILE), without
+    # executing them. Write atomically with restrictive permissions from birth.
+    local env_tmp
+    env_tmp="$(mktemp "${CONF_DIR}/.tgbot.env.XXXXXX")" || return 1
+    if [[ -f "${CONF_DIR}/tgbot.env" ]]; then
+        grep -vE '^(TG_BOT_TOKEN|TG_ADMIN_IDS|MGMT)=' "${CONF_DIR}/tgbot.env" > "$env_tmp" || true
+    fi
+    printf '\nTG_BOT_TOKEN=%s\nTG_ADMIN_IDS=%s\nMGMT=%s/bin/5gpn-ctl\n' "$token" "$ids" "$BASE_DIR" >> "$env_tmp"
+    chmod 600 "$env_tmp"
+    mv -f "$env_tmp" "${CONF_DIR}/tgbot.env"
     chmod 600 "${CONF_DIR}/tgbot.env"
     cat > /etc/systemd/system/5gpn-tgbot.service <<EOF
 [Unit]
@@ -656,7 +681,9 @@ LimitCORE=0
 WantedBy=multi-user.target
 EOF
     systemctl daemon-reload
-    systemctl enable --quiet --now 5gpn-tgbot.service
+    systemctl enable --quiet 5gpn-tgbot.service || return $?
+    systemctl restart 5gpn-tgbot.service || return $?
+    systemctl is-active --quiet 5gpn-tgbot.service || return $?
     if [[ -z "$ids" ]]; then
         warn "尚未设置授权 ID。给 Bot 发送 /id 获取数字 ID，填入 ${CONF_DIR}/tgbot.env 的 TG_ADMIN_IDS，然后:"
         warn "  systemctl restart 5gpn-tgbot"

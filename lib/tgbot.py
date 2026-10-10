@@ -89,6 +89,8 @@ _GENERATION_LOCK = threading.RLock()
 # Per-chat "console" message: menus, progress and results are edited into this
 # single bubble instead of sending a new message every time.
 CONSOLE = {}
+IOS_PAGES = {}
+VERSION = "0.0.1"
 LAST_FAILED_DOT_DOMAIN = {}
 PROXY_URI_RE = re.compile(r"^(ss|vmess|trojan|vless|hysteria2|hy2|tuic|anytls|socks5h|socks5|socks|http|https)://", re.I)
 SUPPORTED_EXIT_LINKS = "ss:// vmess:// trojan:// vless:// hysteria2:// tuic:// anytls:// socks5:// http://"
@@ -431,10 +433,10 @@ def edit_ios_async(cb, chat_id):
 
     def go():
         try:
-            res = op_ios_send_inline(cb)
+            res = op_ios_send_inline(cb, generation)
             with _GENERATION_LOCK:
                 if generation == _chat_generation(chat_id) and res:
-                    edit(cb, res, back_kb("menu:main"))
+                    edit(cb, res, main_menu())
         finally:
             BUSY.discard(key)
 
@@ -1593,44 +1595,90 @@ def op_ios_send(chat_id):
     return cap
 
 
-def op_ios_send_inline(cb):
-    """Send the iOS QR as a fresh, short-lived photo message.
-
-    Do not convert the old console message into media: Telegram retains its
-    original timestamp when editing, so a console that is over 48 hours old
-    cannot be deleted on the way back. The fresh photo carries a callback that
-    deletes only itself, leaving the original menu in place."""
+def op_ios_send_inline(cb, generation=None):
+    """Deliver a fresh QR before retiring its source menu; never age the photo."""
+    chat_id, source_mid = _busy_key_from_cb(cb)
+    if chat_id is None or source_mid is None:
+        return "无法识别原菜单，请发送 /menu 重试。"
+    if generation is None:
+        generation = _chat_generation(chat_id)
     domain = _read_file("/etc/mosdns/.domain") or _read_file("/opt/5gpn/etc/.domain")
-    if domain:
-        url = "http://%s:8111/ios-dot.mobileconfig" % domain
-    else:
-        url = _read_file(os.path.join(WWW_DIR, "ios-profile-url.txt"))
+    url = ("http://%s:8111/ios-dot.mobileconfig" % domain if domain else
+           _read_file(os.path.join(WWW_DIR, "ios-profile-url.txt")))
     if not url:
-        return "未找到 iOS 描述文件地址,先在服务器上 `--ios` 生成。"
+        return "未找到 iOS 描述文件地址，先在服务器上用 -ios 生成。"
     cap = ("📱 <b>iOS DoT 描述文件</b>\n扫码安装(仅蜂窝网启用):\n<code>%s</code>" % html.escape(url))
     fd, png = tempfile.mkstemp(prefix="pgw-ios-qr-", suffix=".png")
     os.close(fd)
     try:
         ok, _ = run2(["qrencode", "-o", png, "-s", "8", "-m", "2", url], timeout=15)
-        if ok:
-            source_mid = cb.get("message", {}).get("message_id")
-            photo_mid = send_photo(
-                cb.get("message", {}).get("chat", {}).get("id"), png, cap,
-                back_kb("ios_back:%s" % source_mid))
-            if photo_mid is not None:
-                return None  # delivered as a fresh photo; source menu is untouched
+        # Serialize delivery + retirement against navigation, including Back.
+        with _GENERATION_LOCK:
+            if generation != _chat_generation(chat_id):
+                return None
+            if ok:
+                photo_mid = send_photo(chat_id, png, cap, back_kb("ios_back:%s" % source_mid))
+                if photo_mid is not None:
+                    IOS_PAGES[(chat_id, source_mid)] = photo_mid
+                    CONSOLE.pop(chat_id, None)
+                    if not delete_message(chat_id, source_mid):
+                        if not edit_message(chat_id, source_mid,
+                                            "📱 iOS 二维码已打开，请在二维码下方点击返回。", []):
+                            clear_message_keyboard(chat_id, source_mid)
+                    return None
     finally:
         try:
             os.unlink(png)
         except OSError:
             pass
-    # fallback: just the URL as text
-    return cap
+    return "二维码生成或发送失败，请重试。\n" + cap
+
+
+def clear_message_keyboard(chat_id, mid):
+    try:
+        result = tg("editMessageReplyMarkup", chat_id=chat_id, message_id=mid,
+                    reply_markup={"inline_keyboard": []})
+    except Exception:
+        return False
+    return isinstance(result, dict) and (result.get("ok") or "not modified" in str(result))
+
+
+def ios_back(cb):
+    chat_id, photo_mid = _busy_key_from_cb(cb)
+    try:
+        source_mid = int(cb.get("data", "").split(":", 1)[1])
+    except (ValueError, IndexError):
+        source_mid = None
+    key = (chat_id, source_mid)
+    with _GENERATION_LOCK:
+        # A duplicate Back must not reset later navigation or spawn more menus.
+        if IOS_PAGES.get(key) == ("closed", photo_mid):
+            answer_callback_async(cb["id"])
+            return
+        deleted = delete_message(chat_id, photo_mid)
+        cleared = deleted or clear_message_keyboard(chat_id, photo_mid)
+        # The callback carries the source ID, so this also works after restart.
+        target = CONSOLE.get(chat_id, source_mid)
+        restored = upsert_console(chat_id, main_menu_text(), main_menu(), message_id=target)
+        if restored is not None:
+            IOS_PAGES[key] = ("closed", photo_mid)
+        if not deleted or restored is None:
+            text = ("二维码未能删除，请手动删除。" if not deleted else "")
+            if not cleared:
+                text += "二维码按钮也未能清除。"
+            text += ("主菜单已恢复。" if restored is not None else "主菜单恢复失败，请发送 /menu 重试。")
+            tg("answerCallbackQuery", callback_query_id=cb["id"], text=text, show_alert=True)
+        else:
+            answer_callback_async(cb["id"])
 
 
 # --------------------------------------------------------------------------- #
 # Keyboards
 # --------------------------------------------------------------------------- #
+def main_menu_text():
+    return "<b>5GPN-X v%s</b>\n选择一个操作：" % VERSION
+
+
 def main_menu():
     return [
         [{"text": "📊 状态", "callback_data": "act:status"},
@@ -1843,7 +1891,7 @@ def handle_message(msg):
     if text.startswith("/"):
         PENDING.pop(chat_id, None)
         if text.startswith(("/start", "/menu")):
-            reanchor_console(chat_id, "<b>5GPN 控制台</b>\n选择一个操作：", main_menu())
+            reanchor_console(chat_id, main_menu_text(), main_menu())
         elif text.startswith("/status"):
             mid = reanchor_console(chat_id, "⏳ 正在获取运行状态…")
             console_async(chat_id, op_status, keyboard_fn=status_kb, message_id=mid)
@@ -1973,10 +2021,17 @@ def handle_callback(cb):
         tg("answerCallbackQuery", callback_query_id=cb_id, text="正在处理上一项操作，请稍候…", show_alert=False)
         return
 
+    if data == "act:ios":
+        page = IOS_PAGES.get((chat_id, cb_mid))
+        if isinstance(page, int):
+            answer_callback_async(cb_id)
+            return
+
     _UI_CONTEXT.generation = (chat_id, _bump_chat_generation(chat_id))
 
     # Stop the button spinner without adding another Telegram round-trip before the edit.
-    answer_callback_async(cb_id)
+    if not data.startswith("ios_back:"):
+        answer_callback_async(cb_id)
 
     # ---- navigation (edit the same bubble) ----
     if data == "cancel:rules":
@@ -1989,20 +2044,10 @@ def handle_callback(cb):
         PENDING.pop(chat_id, None)
         edit(cb, op_dot_status(), dot_menu())
     elif data.startswith("ios_back:"):
-        # Use the existing credential-message deletion helper. A QR left open
-        # for over 48 hours (or an API failure) still needs a manual cleanup.
-        if not delete_message(chat_id, cb_mid):
-            tg("answerCallbackQuery", callback_query_id=cb_id,
-               text="未能删除二维码消息，请手动删除；原主页仍可使用。", show_alert=True)
-        try:
-            source_mid = int(data.split(":", 1)[1])
-        except (TypeError, ValueError):
-            source_mid = None
-        if source_mid is not None:
-            CONSOLE[chat_id] = source_mid
+        ios_back(cb)
     elif data == "menu:main":
         PENDING.pop(chat_id, None)
-        edit(cb, "选择一个操作：", main_menu())
+        edit(cb, main_menu_text(), main_menu())
     elif data == "menu:rules":
         edit(cb, "📑 <b>分流管理</b>：按域名把代理流量分到不同出口 / 直连 / 拒绝。", rules_menu())
     elif data == "menu:rules_del":
@@ -2216,9 +2261,7 @@ def handle_callback(cb):
         edit(cb, "⏳ 正在删除出口 <b>%s</b>…" % html.escape(name))
         edit_async(cb, lambda: op_del_exit(name), back_kb("menu:exits"))
     elif data == "act:ios":
-        # Keep the existing menu message intact. A long-idle menu may be older
-        # than Telegram's 48-hour delete window; the QR is sent separately and
-        # its own fresh Back callback deletes only that QR message.
+        # Send a fresh QR and retire the original menu only after delivery.
         edit_ios_async(cb, chat_id)
     elif data.startswith("pol:"):
         try:

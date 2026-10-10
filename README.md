@@ -33,6 +33,8 @@
 
 ## 安装
 
+项目版本：**0.0.1**（首次引入补丁版本，历史源码仍用 Git commit 标识；见 [CHANGELOG](CHANGELOG.md)）。
+
 安装前先选择并审阅仓库中的完整 commit SHA。不要通过 `main` 分支的 `curl | bash` 直接执行 root 安装器；单文件 `install.sh` 缺少依赖时会拒绝自动下载未固定源码。
 
 ```bash
@@ -42,14 +44,29 @@ git checkout --detach <你已审阅的完整提交SHA>
 sudo bash ./install.sh
 ```
 
-`quick-install.sh` 也要求显式设置 `PGW_COMMIT` 为已审阅的完整提交 SHA；它不会替你决定哪个远端提交可信。
+一键安装（先将下列变量替换成你已审阅的 **40 位完整 commit SHA**；引导脚本和源码使用同一提交）：
+
+```bash
+COMMIT='替换为已审阅的40位完整提交SHA'
+[[ "$COMMIT" =~ ^[0-9a-fA-F]{40}$ ]] && (
+  set -e
+  launcher="$(mktemp)"
+  trap 'rm -f "$launcher"' EXIT
+  curl -fsSL "https://raw.githubusercontent.com/Xiuyixx/5GPN-X/${COMMIT}/quick-install.sh" -o "$launcher"
+  sudo env PGW_COMMIT="$COMMIT" bash "$launcher"
+)
+```
+
+`quick-install.sh` 要求显式设置 `PGW_COMMIT`，不会静默改用 `main`。默认源码目录是 `/opt/5gpn-source`，运行数据目录仍是 `/opt/5gpn`；旧的非 Git `/opt/5gpn` 不需要删除或改名。自定义 `PGW_SRC_DIR` 时必须使用独立源码目录；已有非 Git 目录或有未提交修改的源码目录会被拒绝覆盖。
+
+**已有主机仅更新 Bot/管理脚本**：使用上面的同一固定提交命令，将最后一行改为 `sudo env PGW_COMMIT="$COMMIT" bash "$launcher" --setup-tgbot`。它读取已有 `tgbot.env` 的 Token/管理员 ID（不执行文件内容），保留额外环境设置，更新代码并重启、检查 `5gpn-tgbot`。没有现存 Token 时仍需配置。不要为仅更新 Bot 重跑全量安装：全量安装会重新生成服务配置，不承诺保留所有手工修改；升级前请备份相关配置。
 
 非交互安装（无 TTY 时必须设置 `DOMAIN`）：
 
 ```bash
 export DOMAIN="dns.example.com"
 export EMAIL="admin@example.com"
-sudo ./install.sh
+sudo env DOMAIN="$DOMAIN" EMAIL="$EMAIL" bash ./install.sh
 ```
 
 安装前请先把域名 A 记录指向服务器公网 IP；脚本输入域名后会自动验证解析，无需额外确认。已有证书会直接复用，没有证书时才申请 Let's Encrypt 证书。
@@ -61,22 +78,22 @@ mihomo 与 mosdns 二进制从官方 release 下载并校验锁定的 sha256 摘
 ## 客户端配置
 
 - Android：`设置 -> 网络和互联网 -> 私人 DNS`，填入安装时配置的域名。
-- iOS / iPadOS：扫描安装时生成的二维码，或访问 `http://<你的域名>:8111/ios-dot.mobileconfig` 安装描述文件（仅蜂窝网络启用 DoT，Wi-Fi 自动停用）。重新生成：`sudo ./install.sh -ios`
+- iOS / iPadOS：扫描安装时生成的二维码，或访问 `http://<你的域名>:8111/ios-dot.mobileconfig` 安装描述文件（仅蜂窝网络启用 DoT，Wi-Fi 自动停用）。重新生成：`sudo /opt/5gpn/bin/5gpn-ctl -ios`（源码入口兼容：`./install.sh -ios`）
 - Windows / macOS / Linux：系统 DoT 设置或 Stubby / cloudflared 指向服务器域名 `853` 端口。
 
 ## 管理命令
 
 ```bash
-sudo ./install.sh --status              # 查看状态
-sudo ./install.sh --update-rules        # 更新 GFWList/ChinaList 并重载 mosdns
-sudo ./install.sh --renew-cert          # 续期证书
-sudo ./install.sh --set-dot-domain dns.example.com
-sudo ./install.sh --set-dns "1.1.1.1 8.8.8.8" "223.5.5.5 119.29.29.29"
-sudo ./install.sh -ios                  # 重新生成 iOS 描述文件和二维码
-sudo ./install.sh --list-exits          # 列出出口
-sudo ./install.sh --check-exits         # 检测出口连通性
-sudo ./install.sh --setup-tgbot         # 配置 Telegram Bot
-sudo ./install.sh --uninstall           # 卸载
+sudo /opt/5gpn/bin/5gpn-ctl --status              # 查看状态
+sudo /opt/5gpn/bin/5gpn-ctl --update-rules        # 更新 GFWList/ChinaList 并重载 mosdns
+sudo /opt/5gpn/bin/5gpn-ctl --renew-cert          # 续期证书
+sudo /opt/5gpn/bin/5gpn-ctl --set-dot-domain dns.example.com
+sudo /opt/5gpn/bin/5gpn-ctl --set-dns "1.1.1.1 8.8.8.8" "223.5.5.5 119.29.29.29"
+sudo /opt/5gpn/bin/5gpn-ctl -ios                  # 重新生成 iOS 描述文件和二维码
+sudo /opt/5gpn/bin/5gpn-ctl --list-exits          # 列出出口
+sudo /opt/5gpn/bin/5gpn-ctl --check-exits         # 检测出口连通性
+sudo /opt/5gpn/bin/5gpn-ctl --setup-tgbot         # 配置 Telegram Bot
+sudo /opt/5gpn/bin/5gpn-ctl --uninstall           # 卸载
 ```
 
 ## 出口管理
@@ -85,14 +102,14 @@ sudo ./install.sh --uninstall           # 卸载
 
 ```bash
 # WireGuard：导入你自己准备好的 WireGuard client 配置
-sudo ./install.sh --add-exit us us.conf
+sudo /opt/5gpn/bin/5gpn-ctl --add-exit us us.conf
 
 # URI 出口
-sudo ./install.sh --add-exit jp 'socks5://user:pass@1.2.3.4:1080'
-sudo ./install.sh --add-exit hk 'ss://2022-blake3-aes-128-gcm:PASSWORD@5.6.7.8:443'
+sudo /opt/5gpn/bin/5gpn-ctl --add-exit jp 'socks5://user:pass@1.2.3.4:1080'
+sudo /opt/5gpn/bin/5gpn-ctl --add-exit hk 'ss://2022-blake3-aes-128-gcm:PASSWORD@5.6.7.8:443'
 
 # 切换 / 验证
-sudo ./install.sh --set-exit hk
+sudo /opt/5gpn/bin/5gpn-ctl --set-exit hk
 curl --interface pgw-hk -4 -s https://api.ipify.org; echo
 ```
 
@@ -103,7 +120,7 @@ printf 'socks5://1.2.3.4:1080
 user: myuser
 pass: my@p:ss/word
 remote-dns: on
-' | sudo ./install.sh --add-exit jp
+' | sudo /opt/5gpn/bin/5gpn-ctl --add-exit jp
 ```
 
 当前出口记录在 `/opt/5gpn/etc/current-exit`，开机自动恢复。
@@ -122,15 +139,15 @@ RULE-SET,https://example.com/rules.mrs,jp
 FINAL,us
 EOF
 
-sudo ./install.sh --set-rules rules.conf
-sudo ./install.sh --set-exit smart
+sudo /opt/5gpn/bin/5gpn-ctl --set-rules rules.conf
+sudo /opt/5gpn/bin/5gpn-ctl --set-exit smart
 ```
 
 单独追加规则或规则集（不覆盖整份文件）：
 
 ```bash
-sudo ./install.sh --add-rule 'DOMAIN-SUFFIX,openai.com,us'
-sudo ./install.sh --add-ruleset 'https://example.com/openai.mrs' us
+sudo /opt/5gpn/bin/5gpn-ctl --add-rule 'DOMAIN-SUFFIX,openai.com,us'
+sudo /opt/5gpn/bin/5gpn-ctl --add-ruleset 'https://example.com/openai.mrs' us
 ```
 
 规则类型：`DOMAIN`、`DOMAIN-SUFFIX`、`DOMAIN-KEYWORD`、`IP-CIDR`、`GEOSITE`、`GEOIP`、`RULE-SET`、`FINAL`。
@@ -140,8 +157,8 @@ sudo ./install.sh --add-ruleset 'https://example.com/openai.mrs' us
 导入整份规则并按分类映射出口：
 
 ```bash
-sudo ./install.sh --import-rules /path/to/rule.conf
-sudo ./install.sh --set-policy Netflix hk
+sudo /opt/5gpn/bin/5gpn-ctl --import-rules /path/to/rule.conf
+sudo /opt/5gpn/bin/5gpn-ctl --set-policy Netflix hk
 ```
 
 ## Telegram Bot
@@ -149,7 +166,7 @@ sudo ./install.sh --set-policy Netflix hk
 ```bash
 export TG_BOT_TOKEN="123456:ABC-your-bot-token"
 export TG_ADMIN_IDS="11111111,22222222"
-sudo ./install.sh --setup-tgbot
+sudo /opt/5gpn/bin/5gpn-ctl --setup-tgbot
 ```
 
 不知道自己的数字 ID 时，先启用 Bot 后发送 `/id`，把返回的 ID 写入 `/opt/5gpn/etc/tgbot.env` 并 `sudo systemctl restart 5gpn-tgbot`。
@@ -159,6 +176,8 @@ sudo ./install.sh --setup-tgbot
 添加出口：`🌐 出口 -> ➕ 添加出口`，直接粘贴节点链接（`ss:// vmess:// trojan:// vless:// hysteria2:// tuic:// anytls:// socks5:// http://`），备注会自动作为出口名。
 
 轮询进度持久化在 `/var/lib/5gpn/tgbot-state.json`（权限 600），服务重启后从断点继续；停机期间尚未确认的积压更新仍可能被处理。Telegram 的下一次 `getUpdates(offset)` 即确认更小 ID，并不是本地保存 offset 才确认。被 Telegram 限流（429）时按 `retry_after` 等待，其他轮询失败指数退避（上限 60s）。如需自定义状态文件路径，把 `TG_STATE_FILE` 写入 `/opt/5gpn/etc/tgbot.env` 后重启服务。
+
+点击 iOS 二维码会先发送新图片，再删除主菜单；旧菜单超过 Telegram 删除时限时会改为无按钮的提示。返回时删除二维码并恢复主菜单，重启后仍可返回。超过删除时限或 API 拒绝时会清除二维码按钮并提示手动删除；网络故障也可能阻止清除按钮或恢复菜单，此时请重试 `/menu`。
 
 ## 配置参考
 
@@ -175,7 +194,8 @@ tests/            # 策略测试
 
 | 路径 | 说明 |
 | --- | --- |
-| `/opt/5gpn` | 项目与运行时主目录（源码、`bin/5gpn-ctl`、`bin/tgbot.py`、`bin/mihomo` 等） |
+| `/opt/5gpn-source` | 默认固定提交源码目录（与运行数据分离） |
+| `/opt/5gpn` | 运行时主目录（`bin/5gpn-ctl`、`bin/tgbot.py`、`bin/mihomo` 等） |
 | `/opt/5gpn/etc/current-exit` | 当前出口 |
 | `/opt/5gpn/etc/tgbot.env` | Bot Token 和管理员 ID（权限 600） |
 | `/var/lib/5gpn/tgbot-state.json` | tgbot 轮询断点，重启续传（权限 600） |
@@ -240,7 +260,7 @@ PGW_TUNING=essential            # essential(默认)/performance 内核调优档�
 **如何更新 DNS 规则？**
 
 ```bash
-cd /opt/5gpn && sudo git pull && sudo ./install.sh --update-rules
+sudo /opt/5gpn/bin/5gpn-ctl --update-rules
 ```
 
 **如何查看日志？** 相关服务：`mosdns`、`sniproxy`、`wa-shim`、`quic-proxy`、`5gpn-tgbot`、`5gpn-mihomo@*`，用 `systemctl status` / `journalctl -u <服务> -f` 查看。
@@ -268,4 +288,4 @@ curl -I --resolve youtube.com:443:127.0.0.1 https://youtube.com
 - Certbot 优先使用系统包；Python 依赖不兼容时停止并提示人工修复，不以 root 无约束升级 pip 包。
 - Telegram Bot 仍需要 root 执行服务管理、路由、防火墙及 `/etc` 配置写入。仅限制新文件权限和 core dump，不宣称已做非 root helper 隔离；贸然使用只读系统、私有网络或设备隔离会破坏现有管理功能。
 - 安装阶段失败会中止并报告。系统包、运行时网络规则和服务变更不支持跨阶段的全量事务回滚；请保留配置备份和控制台访问，在维护窗口安装。现有 DNS/出口局部恢复不等于整个安装可原子回退。
-- 本项目目前使用 Git commit 标识源码版本，没有独立项目版本号或 CHANGELOG；依赖版本不是项目版本。
+- 项目版本见本页与 CHANGELOG；安装仍固定完整 Git commit，依赖版本不是项目版本。
