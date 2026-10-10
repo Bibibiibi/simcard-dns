@@ -40,7 +40,7 @@ jobs:
           for t in tests/*.py; do
             echo "RUN $t"
             case "$t" in
-              tests/test_quick_install_branches.py|tests/test_quick_install_source.py|tests/test_tgbot_setup.py) sudo -E python3 "$t" ;;
+              tests/test_quick_install_branches.py|tests/test_quick_install_source.py|tests/test_tgbot_setup.py|tests/test_upgrade_transaction.py) sudo -E python3 "$t" ;;
               *) python3 "$t" ;;
             esac
           done
