@@ -87,6 +87,7 @@ WWW_DIR = "/opt/5gpn/www"
 # Per-chat conversational state for multi-step flows (e.g. add-exit).
 PENDING = {}
 BUSY = set()
+_BUSY_COUNTS = {}
 CHAT_GENERATION = {}
 _GENERATION_LOCK = threading.RLock()
 # Per-chat "console" message: menus, progress and results are edited into this
@@ -321,17 +322,23 @@ def upsert_console(chat_id, text, keyboard=None, mono=False, message_id=None, ge
     if generation is None:
         ui = getattr(_UI_CONTEXT, "generation", None)
         generation = ui[1] if ui and ui[0] == chat_id else None
+    # Never hold the generation lock across Telegram I/O.  A stalled DNS/API
+    # request must not make every other button in this chat wait behind it.
     with _GENERATION_LOCK:
         if generation is not None and generation != CHAT_GENERATION.get(chat_id, 0):
             return None
         mid = message_id if message_id is not None else CONSOLE.get(chat_id)
-        if mid is not None and edit_message(chat_id, mid, text, keyboard, mono):
-            CONSOLE[chat_id] = mid
-            return mid
-        new_mid = send(chat_id, text, keyboard, mono)
-        if new_mid is not None:
-            CONSOLE[chat_id] = new_mid
-        return new_mid
+    if mid is not None and edit_message(chat_id, mid, text, keyboard, mono):
+        with _GENERATION_LOCK:
+            if generation is None or generation == CHAT_GENERATION.get(chat_id, 0):
+                CONSOLE[chat_id] = mid
+        return mid
+    new_mid = send(chat_id, text, keyboard, mono)
+    if new_mid is not None:
+        with _GENERATION_LOCK:
+            if generation is None or generation == CHAT_GENERATION.get(chat_id, 0):
+                CONSOLE[chat_id] = new_mid
+    return new_mid
 
 
 def console_async(chat_id, text_fn, keyboard=None, mono=False, keyboard_fn=None, message_id=None, generation=None):
@@ -354,7 +361,7 @@ def _current_ui(fn):
             ui = getattr(_UI_CONTEXT, "generation", None)
             if ui and ui[0] == chat_id and ui[1] != CHAT_GENERATION.get(chat_id, 0):
                 return None
-            return fn(chat_id, *args, **kwargs)
+        return fn(chat_id, *args, **kwargs)
     return guarded
 
 
@@ -417,6 +424,22 @@ def _busy_key_from_cb(cb):
     return (chat_id, mid)
 
 
+def _acquire_busy(key):
+    with _GENERATION_LOCK:
+        _BUSY_COUNTS[key] = _BUSY_COUNTS.get(key, 0) + 1
+        BUSY.add(key)
+
+
+def _release_busy(key):
+    with _GENERATION_LOCK:
+        count = _BUSY_COUNTS.get(key, 1) - 1
+        if count > 0:
+            _BUSY_COUNTS[key] = count
+        else:
+            _BUSY_COUNTS.pop(key, None)
+            BUSY.discard(key)
+
+
 def edit_async(cb, text_fn, keyboard=None, mono=False):
     key = _busy_key_from_cb(cb)
     generation = _chat_generation(key[0])
@@ -424,13 +447,16 @@ def edit_async(cb, text_fn, keyboard=None, mono=False):
     def go():
         try:
             text = text_fn()
+            # Check under the lock, but perform editMessageText outside it:
+            # Telegram/DNS stalls must not serialize unrelated callbacks.
             with _GENERATION_LOCK:
-                if generation == _chat_generation(key[0]):
-                    edit(cb, text, keyboard, mono)
+                current = generation == _chat_generation(key[0])
+            if current:
+                edit(cb, text, keyboard, mono)
         finally:
-            BUSY.discard(key)
+            _release_busy(key)
 
-    BUSY.add(key)
+    _acquire_busy(key)
     background(go)
 
 
@@ -442,12 +468,13 @@ def edit_ios_async(cb, chat_id):
         try:
             res = op_ios_send_inline(cb, generation)
             with _GENERATION_LOCK:
-                if generation == _chat_generation(chat_id) and res:
-                    edit(cb, res, main_menu())
+                current = generation == _chat_generation(chat_id)
+            if current and res:
+                edit(cb, res, main_menu())
         finally:
-            BUSY.discard(key)
+            _release_busy(key)
 
-    BUSY.add(key)
+    _acquire_busy(key)
     background(go)
 
 
@@ -633,12 +660,20 @@ def _tail_output(out, n=20, limit=1800):
 
 def _exit_ip():
     """Best-effort: the public egress IP as seen through the active exit."""
+    deadline = time.monotonic() + 6
     for url in ("https://api.ipify.org", "https://ifconfig.me/ip", "https://ipinfo.io/ip"):
-        ok, out = run2(["sudo", "-u", "pxout", "curl", "-4", "-s", "--max-time", "10", url],
-                       timeout=14)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        ok, out = run2(["sudo", "-u", "pxout", "curl", "-4", "-fsS",
+                        "--connect-timeout", "2", "--max-time", str(min(2, remaining)), url],
+                       timeout=remaining)
         out = (out or "").strip()
-        if ok and re.match(r"^[0-9.]+$", out):
-            return out
+        if ok:
+            try:
+                return str(ipaddress.IPv4Address(out))
+            except ValueError:
+                pass
     return ""
 
 
@@ -1515,7 +1550,12 @@ def _format_check_exit_row(name, endpoint, state):
     mapping = {"UP": "✅", "DOWN": "❌", "N/A": "➖", "N/A?": "➖", "n/a": "➖"}
     mark = mapping.get(state.upper() if state else "", "➖")
     detail = "<code>%s</code>" % html.escape(endpoint) if endpoint and endpoint != "-" else "<i>n/a</i>"
-    return "%s <b>%s</b>  %s" % (mark, html.escape(name), detail)
+    labels = {"UP": "TCP 可连接（未验证代理）", "DOWN": "TCP 未连接（非代理认证测试）",
+              "DNS_ERROR": "服务器 DNS 解析失败，节点状态未知",
+              "UDP_UNTESTED": "UDP 节点：不适用 TCP 探测",
+              "TIMEOUT": "探测超时，节点状态未知", "UNKNOWN": "缺少探测信息"}
+    return "%s <b>%s</b>  %s — %s" % (
+        mark, html.escape(name), detail, html.escape(labels.get(state.upper(), state)))
 
 
 def parse_check_exits_output(out):
@@ -1551,7 +1591,7 @@ def op_check_exits():
             return "（没有可检查的出口）"
         return "❌ <b>出口检查失败</b>\n%s" % html.escape(_reason(out))
     bad = any(state.upper() == "DOWN" for _, _, state in items)
-    lines = ["🩺 <b>出口节点连通性</b>%s" % ("　⚠️ 有节点不可达！" if bad else "")]
+    lines = ["🩺 <b>出口节点连通性</b>%s" % ("　⚠️ 有 TCP 探测未成功" if bad else "")]
     lines.extend(_format_check_exit_row(name, endpoint, state) for name, endpoint, state in items)
     return "\n".join(lines)
 
@@ -1690,7 +1730,7 @@ def ios_back(cb):
 # Keyboards
 # --------------------------------------------------------------------------- #
 def main_menu_text():
-    return "选择一个操作："
+    return "5GPN-X 1.1.1\n选择一个操作："
 
 
 def main_menu():
@@ -2031,7 +2071,8 @@ def handle_callback(cb):
         tg("answerCallbackQuery", callback_query_id=cb_id, text="⛔ 未授权", show_alert=True)
         return
 
-    if _busy_key_from_cb(cb) in BUSY:
+    # Navigation may leave a slow view; do not allow overlapping mutations.
+    if _busy_key_from_cb(cb) in BUSY and not data.startswith("menu:"):
         tg("answerCallbackQuery", callback_query_id=cb_id, text="正在处理上一项操作，请稍候…", show_alert=False)
         return
 
