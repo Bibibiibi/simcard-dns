@@ -754,8 +754,8 @@ def _proc_addr(field):
     return ip, int(hexport, 16)
 
 
-def inbound_clients(tables=TCP_TABLES):
-    """{remote_ip: {local_port: count}} for established inbound TCP sessions.
+def _inbound_conns(tables=TCP_TABLES):
+    """[(remote_ip, local_port, socket_inode)] for established inbound TCP.
 
     Inbound means the local side is a listening port; loopback peers (e.g.
     wa-shim -> sniproxy) are internal and skipped.
@@ -775,13 +775,81 @@ def inbound_clients(tables=TCP_TABLES):
             if f[3] == "0A":  # LISTEN
                 listening.add(local[1])
             elif f[3] == "01":  # ESTABLISHED
-                established.append((local[1], remote[0]))
+                established.append((remote[0], local[1], f[9] if len(f) > 9 else ""))
+    return [(ip, port, inode) for ip, port, inode in established
+            if port in listening and not ip.is_loopback]
+
+
+def inbound_clients(tables=TCP_TABLES):
+    """{remote_ip: {local_port: count}} for established inbound TCP sessions."""
     clients = {}
-    for port, ip in established:
-        if port in listening and not ip.is_loopback:
-            ports = clients.setdefault(ip, {})
-            ports[port] = ports.get(port, 0) + 1
+    for ip, port, _ in _inbound_conns(tables):
+        ports = clients.setdefault(ip, {})
+        ports[port] = ports.get(port, 0) + 1
     return clients
+
+
+def sshd_socket_titles(inodes, proc_root="/proc"):
+    """{socket_inode: [sshd process titles]} for sockets held by sshd.
+
+    sshd retitles its processes: "sshd: root [priv]"/"[net]" while
+    authenticating, "sshd: root@pts/0"/"root@notty" once logged in. Only sshd
+    processes are scanned, so proxies with many descriptors cost nothing.
+    """
+    want = {"socket:[%s]" % i: i for i in inodes if i}
+    found = {}
+    if not want:
+        return found
+    try:
+        pids = [p for p in os.listdir(proc_root) if p.isdigit()]
+    except OSError:
+        return found
+    for pid in pids:
+        base = os.path.join(proc_root, pid)
+        if _read_file(os.path.join(base, "comm")) != "sshd":
+            continue
+        try:
+            title = open(os.path.join(base, "cmdline"), "rb").read()
+        except OSError:
+            continue
+        title = title.replace(b"\0", b" ").decode("utf-8", "replace").strip()
+        try:
+            fds = os.listdir(os.path.join(base, "fd"))
+        except OSError:
+            continue
+        for fd in fds:
+            try:
+                inode = want.get(os.readlink(os.path.join(base, "fd", fd)))
+            except OSError:
+                continue
+            if inode:
+                found.setdefault(inode, []).append(title)
+    return found
+
+
+SSH_LOGGED_IN_RE = re.compile(r"^sshd: ([^\s@\[]+)@")
+SSH_FAILED_RE = re.compile(
+    r"^(?:Connection closed by|Disconnected from) .*?(\d{1,3}(?:\.\d{1,3}){3}) port \d+ \[preauth\]$")
+SSH_ACCEPTED_RE = re.compile(r"^Accepted \S+ for (\S+) from (\d{1,3}(?:\.\d{1,3}){3}) ")
+
+
+def ssh_log_summary(text):
+    """(failed attempts per IP, {ip: users} that logged in) from sshd log text."""
+    failed, accepted = {}, {}
+    for line in text.splitlines():
+        m = SSH_FAILED_RE.match(line)
+        if m:
+            failed[m.group(1)] = failed.get(m.group(1), 0) + 1
+            continue
+        m = SSH_ACCEPTED_RE.match(line)
+        if m:
+            accepted.setdefault(m.group(2), set()).add(m.group(1))
+    return failed, accepted
+
+
+def _ssh_log_text(since="-24h"):
+    return run(["journalctl", "-u", "ssh", "-u", "sshd", "--since", since,
+                "-o", "cat", "--no-pager"], timeout=20)
 
 
 def _client_networks(path=CLIENT_CIDRS_FILE):
@@ -794,21 +862,55 @@ def _client_networks(path=CLIENT_CIDRS_FILE):
     return nets
 
 
-def op_clients(tables=TCP_TABLES, cidrs_path=CLIENT_CIDRS_FILE):
-    """Card listing public IPs currently connected to the gateway."""
-    clients = inbound_clients(tables)
+def op_clients(tables=TCP_TABLES, cidrs_path=CLIENT_CIDRS_FILE, proc_root="/proc", ssh_log=None):
+    """Card listing public IPs currently connected, with SSH login state."""
+    conns = _inbound_conns(tables)
+    owners = sshd_socket_titles([inode for _, _, inode in conns], proc_root)
+    failed, accepted = ssh_log_summary(_ssh_log_text() if ssh_log is None else ssh_log)
     nets = _client_networks(cidrs_path)
+    clients = {}
+    for ip, port, inode in conns:
+        c = clients.setdefault(ip, {"ports": {}, "ssh_users": set(), "ssh_pending": 0})
+        titles = owners.get(inode)
+        if titles is None:
+            c["ports"][port] = c["ports"].get(port, 0) + 1
+            continue
+        c["ports"][("SSH", port)] = c["ports"].get(("SSH", port), 0) + 1
+        users = {m.group(1) for t in titles for m in [SSH_LOGGED_IN_RE.match(t)] if m}
+        if users:
+            c["ssh_users"] |= users
+        else:
+            c["ssh_pending"] += 1
+
     lines = ["<b>👥 当前连入 IP</b>", ""]
     if not clients:
         lines.append("（当前没有外部连接）")
     for ip in sorted(clients, key=lambda x: (x.version, x)):
-        ports = clients[ip]
+        c = clients[ip]
         inside = any(ip.version == n.version and ip in n for n in nets)
-        tag = "✅ 客户端网段" if inside else "⚪ 网段外"
-        parts = ["%s:%d×%d" % (CLIENT_PORT_LABELS.get(p, "端口"), p, c)
-                 for p, c in sorted(ports.items())]
-        lines.append("<code>%s</code>  %s" % (ip, tag))
+        lines.append("<code>%s</code>  %s" % (ip, "✅ 客户端网段" if inside else "⚪ 网段外"))
+        parts = []
+        for key, count in sorted(c["ports"].items(), key=lambda kv: str(kv[0])):
+            if isinstance(key, tuple):
+                parts.append("SSH:%d×%d" % (key[1], count))
+            else:
+                parts.append("%s:%d×%d" % (CLIENT_PORT_LABELS.get(key, "端口"), key, count))
         lines.append("　" + html.escape(" · ".join(parts)))
+        if c["ssh_users"]:
+            lines.append("　🔓 SSH 已登录：%s" % html.escape("、".join(sorted(c["ssh_users"]))))
+        if c["ssh_pending"]:
+            n = failed.get(str(ip), 0)
+            tried = ("，24h 内失败 %d 次" % n) if n else ""
+            lines.append("　🔒 SSH 未登录（认证中）%s" % tried)
+
+    total = sum(failed.values())
+    lines += ["", "🔐 <b>SSH 近 24 小时</b>"]
+    lines.append("　失败尝试 %d 次，来自 %d 个 IP" % (total, len(failed)))
+    if accepted:
+        for aip in sorted(accepted):
+            lines.append("　成功登录：<code>%s</code>（%s）" % (aip, html.escape("、".join(sorted(accepted[aip])))))
+    else:
+        lines.append("　无成功登录")
     lines += ["", "仅显示此刻已建立的 TCP 连接；DoT 空闲后会断开，QUIC(UDP) 不在此列。"]
     return "\n".join(lines)
 
