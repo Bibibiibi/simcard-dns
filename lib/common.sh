@@ -271,6 +271,25 @@ print(" ".join(str(n) for n in ipaddress.collapse_addresses(nets)))
 PY
 }
 
+# This host's own IPv4 addresses (loopback, public IP, interface addresses).
+# The SNI proxies forward to whatever a Host/SNI resolves to, so a request
+# naming this host would otherwise be proxied back to itself forever.
+self_ipv4_addrs() {
+    local public="${PUBLIC_IP:-$(cat /etc/mosdns/.public_ip 2>/dev/null || true)}"
+    local iface
+    iface="$(ip -4 -o addr show scope global 2>/dev/null | awk '{sub(/\/.*/, "", $4); print $4}' | tr '\n' ' ')"
+    python3 - 127.0.0.0/8 "${public}" "${iface}" <<'PY'
+import ipaddress, sys
+nets = []
+for item in " ".join(sys.argv[1:]).split():
+    try:
+        nets.append(ipaddress.IPv4Network(item, strict=False))
+    except ValueError:
+        pass
+print(" ".join(str(n) for n in ipaddress.collapse_addresses(nets)))
+PY
+}
+
 # Effective client networks: CLIENT_CIDRS env > persisted file > default.
 current_client_cidrs() {
     local value="${CLIENT_CIDRS:-}"

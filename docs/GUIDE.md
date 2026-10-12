@@ -100,6 +100,14 @@ sudo /opt/5gpn/bin/5gpn-ctl --set-policy Netflix hk
 
 4. **放行端口**：默认 `preserve` 模式不改主机防火墙，命令会提示需要放行的端口。请在主机防火墙**和云厂商安全组**中，只对这些网段放行 TCP `80/443` 和 UDP `443`；不要对全网开放。`FIREWALL_MODE=auto` 会自动追加放行规则，但修改网段后不会删除旧网段的规则，需要自行清理。
 
+   **注意**：如果主机没有防火墙（INPUT 全部放行），80/443 对所有人开放，任何知道服务器 IP 的人都能直接把它当开放代理用，扫描器很快就会找上门。没有其他防火墙需求时，推荐让项目接管 INPUT：
+
+   ```bash
+   sudo FIREWALL_MODE=managed /opt/5gpn/bin/5gpn-ctl --set-client-cidrs "<当前客户端网段>"
+   ```
+
+   效果：80/443 和 UDP 443 只放行客户端网段；853、8111 和检测到的 SSH 端口对所有人开放；其余入站全部拒绝，规则开机自动加载。原规则备份为 `/etc/nftables.conf.pgw-backup`。853 不建议限制为客户端网段：Android 私人 DNS 在 Wi-Fi 下同样强制使用，限制后连 Wi-Fi 会无法解析。
+
 5. **手机设置**：Android 私人 DNS 或 iOS 描述文件按[客户端配置](../README.md#客户端配置)填写即可，手机上不用安装代理软件。
 
 注意事项：

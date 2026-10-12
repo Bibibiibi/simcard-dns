@@ -221,9 +221,11 @@ resolve_firewall_mode() {
     echo preserve
 }
 write_pgw_exit_nft() {
-    local client_set
+    local client_set self_set
     client_set="$(current_client_cidrs)" || return 1
     client_set="${client_set// /, }"
+    self_set="$(self_ipv4_addrs)" || return 1
+    self_set="${self_set// /, }"
     mkdir -p "$(dirname "${PGW_EXIT_NFT}")"
     cat > "${PGW_EXIT_NFT}" <<EOF
 #!/usr/sbin/nft -f
@@ -232,7 +234,8 @@ write_pgw_exit_nft() {
 # can be (re)loaded after any firewall reload without duplicating rules.
 # Traffic to the client networks and any private/loopback range is NOT marked,
 # so proxy replies to clients (including public mobile ranges) still take the
-# normal route (not the tunnel).
+# normal route (not the tunnel). Proxy connections back to this host's own
+# 80/443 are rejected: a Host/SNI naming this server would loop forever.
 table inet pgw_exit
 delete table inet pgw_exit
 table inet pgw_exit {
@@ -242,6 +245,11 @@ table inet pgw_exit {
         ip daddr { ${client_set} } return
         meta l4proto { tcp, udp } th dport 53 return
         meta skuid "pxout" meta mark set 0x1
+    }
+    chain no_self_loop {
+        type filter hook output priority filter; policy accept;
+        meta skuid "pxout" ip daddr { ${self_set} } tcp dport { 80, 443 } reject with tcp reset
+        meta skuid "pxout" ip daddr { ${self_set} } udp dport 443 reject
     }
     chain clamp {
         type filter hook postrouting priority mangle; policy accept;
@@ -256,7 +264,7 @@ apply_pgw_exit_rules() {
         write_pgw_exit_nft || return 1
         nft -f "${PGW_EXIT_NFT}" 2>/dev/null || true
     elif command -v iptables >/dev/null 2>&1 && id -u "${EXIT_USER}" >/dev/null 2>&1; then
-        local pn pp client_nets
+        local pn pp client_nets self_net
         client_nets="$(current_client_cidrs)" || return 1
         while iptables -t mangle -D OUTPUT -m owner --uid-owner "${EXIT_USER}" -j MARK --set-mark "${EXIT_MARK}" 2>/dev/null; do :; done
         for pn in 127.0.0.0/8 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 100.64.0.0/10 ${client_nets}; do
@@ -268,6 +276,13 @@ apply_pgw_exit_rules() {
             iptables -t mangle -A OUTPUT -m owner --uid-owner "${EXIT_USER}" -p "$pp" --dport 53 -j RETURN 2>/dev/null || true
         done
         iptables -t mangle -A OUTPUT -m owner --uid-owner "${EXIT_USER}" -j MARK --set-mark "${EXIT_MARK}" 2>/dev/null || true
+        # Never let the proxies connect back to this host's own 80/443.
+        for self_net in $(self_ipv4_addrs); do
+            while iptables -D OUTPUT -m owner --uid-owner "${EXIT_USER}" -d "$self_net" -p tcp -m multiport --dports 80,443 -j REJECT --reject-with tcp-reset 2>/dev/null; do :; done
+            iptables -A OUTPUT -m owner --uid-owner "${EXIT_USER}" -d "$self_net" -p tcp -m multiport --dports 80,443 -j REJECT --reject-with tcp-reset 2>/dev/null || true
+            while iptables -D OUTPUT -m owner --uid-owner "${EXIT_USER}" -d "$self_net" -p udp --dport 443 -j REJECT 2>/dev/null; do :; done
+            iptables -A OUTPUT -m owner --uid-owner "${EXIT_USER}" -d "$self_net" -p udp --dport 443 -j REJECT 2>/dev/null || true
+        done
         iptables -t mangle -C POSTROUTING -o "pgw+" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || \
             iptables -t mangle -A POSTROUTING -o "pgw+" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || true
     fi

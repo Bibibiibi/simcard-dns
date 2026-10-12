@@ -12,6 +12,7 @@ fail() { echo "$1" >&2; exit 1; }
 info() { :; }; warn() { :; }; ok() { :; }; err() { echo "$*" >&2; }
 eval "$(awk '/^normalize_client_cidrs\(\)/,/^}/' "${root}/lib/common.sh")"
 eval "$(awk '/^current_client_cidrs\(\)/,/^}/' "${root}/lib/common.sh")"
+eval "$(awk '/^self_ipv4_addrs\(\)/,/^}/' "${root}/lib/common.sh")"
 # The nft heredoc has its own column-0 "}", so cut at the next function.
 eval "$(sed -n '/^write_pgw_exit_nft()/,/^apply_pgw_exit_rules()/p' "${root}/lib/host-setup.sh" | sed '$d')"
 eval "$(grep '^DEFAULT_CLIENT_CIDRS=' "${root}/install.sh")"
@@ -34,7 +35,11 @@ echo "103.143.92.0/23 203.0.113.0/24" > "${CLIENT_CIDRS_FILE}"
 
 # --- proxy replies to clients are never marked into the exit tunnel ----------
 PGW_EXIT_NFT="${tmp}/pgw-exit.nft"
-write_pgw_exit_nft
+PUBLIC_IP=192.0.2.10 write_pgw_exit_nft
+# A Host/SNI naming this server must not be proxied back to itself (loop/DoS).
+grep -F 'meta skuid "pxout" ip daddr {' "${PGW_EXIT_NFT}" | grep -F 'tcp dport { 80, 443 } reject with tcp reset' \
+    | grep -qF '192.0.2.10' || fail "proxy connections to this host's own 80/443 must be rejected"
+grep -F 'udp dport 443 reject' "${PGW_EXIT_NFT}" | grep -qF '127.0.0.0/8' || fail "QUIC self-loop must be rejected"
 grep -qF 'ip daddr { 103.143.92.0/23, 203.0.113.0/24 } return' "${PGW_EXIT_NFT}" \
     || fail "client networks must be excluded from egress marking"
 grep -qF 'meta skuid "pxout" meta mark set 0x1' "${PGW_EXIT_NFT}" || fail "egress marking must remain"
