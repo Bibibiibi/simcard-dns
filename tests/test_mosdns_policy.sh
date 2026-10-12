@@ -10,12 +10,17 @@ install="$(cat "${root}/install.sh" "${root}/lib/common.sh" "${root}/lib/dns.sh"
 fail() { echo "$1" >&2; exit 1; }
 has() { [[ "$1" == *"$2"* ]] || fail "$3"; }
 
-has "$template" 'client_ip 172.22.0.0/16' \
-    "mosdns must identify the gateway client network by source address"
-has "$template" 'exec: goto private_client' \
-    "gateway client networks must enter the synthetic proxy policy"
-has "$template" 'exec: goto public_client' \
-    "non-private clients must enter the public resolution policy"
+has "$template" 'client_ip __CLIENT_CIDRS__' \
+    "mosdns must identify the client networks by source address"
+has "$rules" '"__CLIENT_CIDRS__": client_cidrs' \
+    "the renderer must substitute the configured client networks"
+has "$rules" 'client_cidrs="$DEFAULT_CLIENT_CIDRS"' \
+    "installs without a stored client list must use the default client networks"
+[[ "$template$rules" != *'172.22.'* ]] || fail "the private 172.22.0.0/16 network must not be built in"
+has "$template" 'exec: goto proxy_client' \
+    "client networks must enter the synthetic proxy policy"
+has "$template" 'exec: goto other_client' \
+    "other sources must enter the normal resolution policy"
 has "$template" 'exec: goto remote_resolve' \
     "public client non-ChinaList domains must use remote resolve"
 has "$template" 'exec: reject 0' \

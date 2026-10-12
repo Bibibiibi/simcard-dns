@@ -737,6 +737,87 @@ def _established():
     return n
 
 
+TCP_TABLES = ("/proc/net/tcp", "/proc/net/tcp6")
+CLIENT_CIDRS_FILE = "/etc/mosdns/.client_cidrs"
+CLIENT_PORT_LABELS = {853: "DNS", 443: "代理", 80: "代理", 8111: "iOS", 22: "SSH"}
+
+
+def _proc_addr(field):
+    """Decode a /proc/net/tcp{,6} "HEXIP:HEXPORT" field (IPv4-mapped -> IPv4)."""
+    hexip, hexport = field.split(":")
+    raw = bytes.fromhex(hexip)
+    # The kernel prints each 32-bit word in host (little-endian) order.
+    raw = b"".join(raw[i:i + 4][::-1] for i in range(0, len(raw), 4))
+    ip = ipaddress.ip_address(raw)
+    if ip.version == 6 and ip.ipv4_mapped:
+        ip = ip.ipv4_mapped
+    return ip, int(hexport, 16)
+
+
+def inbound_clients(tables=TCP_TABLES):
+    """{remote_ip: {local_port: count}} for established inbound TCP sessions.
+
+    Inbound means the local side is a listening port; loopback peers (e.g.
+    wa-shim -> sniproxy) are internal and skipped.
+    """
+    listening, established = set(), []
+    for path in tables:
+        try:
+            rows = open(path).readlines()[1:]
+        except OSError:
+            continue
+        for row in rows:
+            f = row.split()
+            try:
+                local, remote = _proc_addr(f[1]), _proc_addr(f[2])
+            except (ValueError, IndexError):
+                continue
+            if f[3] == "0A":  # LISTEN
+                listening.add(local[1])
+            elif f[3] == "01":  # ESTABLISHED
+                established.append((local[1], remote[0]))
+    clients = {}
+    for port, ip in established:
+        if port in listening and not ip.is_loopback:
+            ports = clients.setdefault(ip, {})
+            ports[port] = ports.get(port, 0) + 1
+    return clients
+
+
+def _client_networks(path=CLIENT_CIDRS_FILE):
+    nets = []
+    for item in _read_file(path).replace(",", " ").split():
+        try:
+            nets.append(ipaddress.ip_network(item, strict=False))
+        except ValueError:
+            pass
+    return nets
+
+
+def op_clients(tables=TCP_TABLES, cidrs_path=CLIENT_CIDRS_FILE):
+    """Card listing public IPs currently connected to the gateway."""
+    clients = inbound_clients(tables)
+    nets = _client_networks(cidrs_path)
+    lines = ["<b>👥 当前连入 IP</b>", ""]
+    if not clients:
+        lines.append("（当前没有外部连接）")
+    for ip in sorted(clients, key=lambda x: (x.version, x)):
+        ports = clients[ip]
+        inside = any(ip.version == n.version and ip in n for n in nets)
+        tag = "✅ 客户端网段" if inside else "⚪ 网段外"
+        parts = ["%s:%d×%d" % (CLIENT_PORT_LABELS.get(p, "端口"), p, c)
+                 for p, c in sorted(ports.items())]
+        lines.append("<code>%s</code>  %s" % (ip, tag))
+        lines.append("　" + html.escape(" · ".join(parts)))
+    lines += ["", "仅显示此刻已建立的 TCP 连接；DoT 空闲后会断开，QUIC(UDP) 不在此列。"]
+    return "\n".join(lines)
+
+
+def clients_kb():
+    return [[{"text": "🔄 刷新", "callback_data": "act:clients"}],
+            [{"text": "« 返回", "callback_data": "menu:main"}]]
+
+
 def _fmt_bytes(n):
     n = float(n)
     for unit in ("B", "K", "M", "G", "T"):
@@ -1699,7 +1780,8 @@ def main_menu():
          {"text": "🌐 出口管理", "callback_data": "menu:exits"}],
         [{"text": "📑 分流管理", "callback_data": "menu:rules"},
          {"text": "🛠️ 5GPN 管理", "callback_data": "menu:dot"}],
-        [{"text": "📱 iOS 二维码", "callback_data": "act:ios"}],
+        [{"text": "👥 连入 IP", "callback_data": "act:clients"},
+         {"text": "📱 iOS 二维码", "callback_data": "act:ios"}],
     ]
 
 
@@ -1909,6 +1991,9 @@ def handle_message(msg):
         elif text.startswith("/status"):
             mid = reanchor_console(chat_id, "⏳ 正在获取运行状态…")
             console_async(chat_id, op_status, keyboard_fn=status_kb, message_id=mid)
+        elif text.startswith("/clients"):
+            mid = reanchor_console(chat_id, "⏳ 正在获取连入 IP…")
+            console_async(chat_id, op_clients, keyboard_fn=clients_kb, message_id=mid)
         elif text.startswith("/exits"):
             mid = reanchor_console(chat_id, "⏳ 正在获取当前出口信息…")
             console_async(chat_id, exits_overview_text, keyboard_fn=exits_menu, message_id=mid)
@@ -2243,6 +2328,9 @@ def handle_callback(cb):
     elif data == "act:status":
         edit(cb, "⏳ 正在获取运行状态…")
         edit_async(cb, op_status, status_kb())
+    elif data == "act:clients":
+        edit(cb, "⏳ 正在获取连入 IP…")
+        edit_async(cb, op_clients, clients_kb())
     elif data == "act:status_refresh":
         edit(cb, "⏳ 正在刷新状态…")
         edit_async(cb, op_status, status_kb())
@@ -2329,6 +2417,7 @@ def handle_callback(cb):
 BOT_COMMANDS = [
     ("menu", "打开操作面板"),
     ("status", "查看运行状态"),
+    ("clients", "查看当前连入的 IP"),
     ("exits", "出口管理（切换/添加/删除）"),
     ("rules", "分流管理"),
     ("id", "获取我的 Telegram ID"),

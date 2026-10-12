@@ -221,20 +221,25 @@ resolve_firewall_mode() {
     echo preserve
 }
 write_pgw_exit_nft() {
+    local client_set
+    client_set="$(current_client_cidrs)" || return 1
+    client_set="${client_set// /, }"
     mkdir -p "$(dirname "${PGW_EXIT_NFT}")"
-    cat > "${PGW_EXIT_NFT}" <<'EOF'
+    cat > "${PGW_EXIT_NFT}" <<EOF
 #!/usr/sbin/nft -f
 # Switchable egress: mark proxy ("pxout") outbound so policy routing can send it
 # into a WireGuard tunnel; clamp MSS on tunnel interfaces. Self-contained so it
 # can be (re)loaded after any firewall reload without duplicating rules.
-# Traffic to the client network and any private/loopback range is NOT marked,
-# so proxy replies to 172.22.0.0/16 still take the normal route (not the tunnel).
+# Traffic to the client networks and any private/loopback range is NOT marked,
+# so proxy replies to clients (including public mobile ranges) still take the
+# normal route (not the tunnel).
 table inet pgw_exit
 delete table inet pgw_exit
 table inet pgw_exit {
     chain mark_out {
         type route hook output priority -150; policy accept;
         ip daddr { 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10 } return
+        ip daddr { ${client_set} } return
         meta l4proto { tcp, udp } th dport 53 return
         meta skuid "pxout" meta mark set 0x1
     }
@@ -248,12 +253,13 @@ EOF
 }
 apply_pgw_exit_rules() {
     if command -v nft >/dev/null 2>&1; then
-        write_pgw_exit_nft
+        write_pgw_exit_nft || return 1
         nft -f "${PGW_EXIT_NFT}" 2>/dev/null || true
     elif command -v iptables >/dev/null 2>&1 && id -u "${EXIT_USER}" >/dev/null 2>&1; then
-        local pn pp
+        local pn pp client_nets
+        client_nets="$(current_client_cidrs)" || return 1
         while iptables -t mangle -D OUTPUT -m owner --uid-owner "${EXIT_USER}" -j MARK --set-mark "${EXIT_MARK}" 2>/dev/null; do :; done
-        for pn in 127.0.0.0/8 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 100.64.0.0/10; do
+        for pn in 127.0.0.0/8 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 100.64.0.0/10 ${client_nets}; do
             while iptables -t mangle -D OUTPUT -m owner --uid-owner "${EXIT_USER}" -d "$pn" -j RETURN 2>/dev/null; do :; done
             iptables -t mangle -A OUTPUT -m owner --uid-owner "${EXIT_USER}" -d "$pn" -j RETURN 2>/dev/null || true
         done
@@ -267,18 +273,20 @@ apply_pgw_exit_rules() {
     fi
 }
 firewall_preserve_hints() {
-    local ssh_ports="$1"
+    local ssh_ports="$1" client_nets
+    client_nets="$(current_client_cidrs)" || return 1
     info "FIREWALL_MODE=preserve: leaving the existing host firewall untouched."
     info "Make sure these inbound ports are open (SSH detected on: ${ssh_ports}):"
     info "  TCP ${ssh_ports} (SSH), 853 (DoT), 8111 (iOS profile)"
-    info "  From 172.22.0.0/16 only: TCP 80/443 and UDP 443 (reverse proxy)"
+    info "  From ${client_nets} only: TCP 80/443 and UDP 443 (reverse proxy)"
     info "  Recommended: per-IP rate limit 10000 qps on DoT 853"
     info "  TCP 80 must be reachable while Let's Encrypt issues/renews the cert."
 }
 firewall_auto_allow() {
     local ssh_ports="$1" p net
     local tcp_list="${ssh_ports},853,8111"
-    local client_nets="172.22.0.0/16"
+    local client_nets
+    client_nets="$(current_client_cidrs)" || return 1
     if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
         info "FIREWALL_MODE=auto: adding allow rules to the active UFW profile..."
         for p in ${tcp_list//,/ }; do ufw allow "${p}/tcp" >/dev/null 2>&1 || true; done
@@ -386,7 +394,8 @@ run_auto_allow_persistence() {
     fi
 }
 firewall_managed_apply() {
-    local tcp_ports="$1" tcp_ports_ipt="$2"
+    local tcp_ports="$1" tcp_ports_ipt="$2" client_nets net
+    client_nets="$(current_client_cidrs)" || return 1
     if command -v nft >/dev/null 2>&1; then
         # Keep the very first pre-project ruleset around for disaster recovery.
         if [[ -f /etc/nftables.conf && ! -f /etc/nftables.conf.pgw-backup ]] \
@@ -408,8 +417,8 @@ table inet filter {
         # DoT 853 — per-IP QPS 10000 then accept.
         tcp dport 853 meter dns_rate_dot { ip saddr limit rate over 10000/second } drop
         tcp dport 853 accept
-        ip saddr 172.22.0.0/16 tcp dport { 80, 443 } accept
-        ip saddr 172.22.0.0/16 udp dport 443 accept
+        ip saddr { __CLIENT_CIDRS__ } tcp dport { 80, 443 } accept
+        ip saddr { __CLIENT_CIDRS__ } udp dport 443 accept
         # ICMP for basic network health
         ip protocol icmp accept
         ip6 nexthdr icmpv6 accept
@@ -426,7 +435,7 @@ table inet filter {
 # reloaded independently after partial firewall reloads.
 include "/etc/5gpn/pgw-exit.nft"
 EOF
-        sed -i "s/__TCP_PORTS__/${tcp_ports}/" "$tmp_conf" || return 1
+        sed -i -e "s/__TCP_PORTS__/${tcp_ports}/" -e "s#__CLIENT_CIDRS__#${client_nets// /, }#g" "$tmp_conf" || return 1
         if ! nft -c -f "$tmp_conf" >/dev/null 2>&1; then
             rm -f "$tmp_conf"
             warn "Generated nftables config failed validation; existing firewall left unchanged."
@@ -457,8 +466,10 @@ EOF
         # DoT 853 — per-IP QPS 10000 then accept.
         iptables -A INPUT -p tcp --dport 853 -m hashlimit --hashlimit-above 10000/sec --hashlimit-burst 10000 --hashlimit-mode srcip --hashlimit-name dns_dot -j DROP || return 1
         iptables -A INPUT -p tcp --dport 853 -j ACCEPT || return 1
-        iptables -A INPUT -s 172.22.0.0/16 -p tcp -m multiport --dports 80,443 -j ACCEPT || return 1
-        iptables -A INPUT -s 172.22.0.0/16 -p udp --dport 443 -j ACCEPT || return 1
+        for net in ${client_nets}; do
+            iptables -A INPUT -s "${net}" -p tcp -m multiport --dports 80,443 -j ACCEPT || return 1
+            iptables -A INPUT -s "${net}" -p udp --dport 443 -j ACCEPT || return 1
+        done
         iptables -A INPUT -p icmp -j ACCEPT || return 1
         iptables -P FORWARD ACCEPT || return 1
         iptables -P OUTPUT ACCEPT || return 1
@@ -538,7 +549,7 @@ setup_firewall() {
         auto)     firewall_auto_allow "$ssh_ports" ;;
         managed)  firewall_managed_apply "$tcp_ports" "$tcp_ports_ipt" || { warn "Managed firewall failed; inspect live rules and pre-install backups before retrying."; return 1; } ;;
     esac
-    ok "Firewall configured (reverse proxy whitelist: 172.22.0.0/16)"
+    ok "Firewall configured (reverse proxy whitelist: $(current_client_cidrs))"
 }
 open_cert_http_port() {
     info "Temporarily opening TCP/80 for Let's Encrypt HTTP-01..."

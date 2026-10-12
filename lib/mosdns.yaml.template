@@ -15,7 +15,7 @@ plugins:
         - /etc/mosdns/chinalist.txt
 
   # Explicit per-domain overrides managed by --proxy-domain. These are
-  # evaluated before ChinaList/GFWList for private gateway clients only.
+  # evaluated before ChinaList/GFWList for client networks only.
   - tag: override_direct_domains
     type: domain_set
     args:
@@ -142,10 +142,12 @@ __LOCAL_SECONDARY_UPSTREAMS__
       - exec: $local_fallback
 
   # DNS service does not return AAAA records; clients use IPv4 only.
-  # Internal clients: ChinaList -> local_resolve (direct);
-  #                   everything else -> server IP (proxied via TCP/QUIC).
-  # External clients: GFWList -> normal overseas resolve (no hijack);
-  #                   ChinaList -> local_resolve; other -> overseas.
+  # Client networks (CLIENT_CIDRS, public mobile ranges):
+  #   ChinaList -> local_resolve (direct);
+  #   everything else -> server IP (proxied via TCP/QUIC).
+  # Other sources:
+  #   GFWList -> normal overseas resolve (no hijack);
+  #   ChinaList -> local_resolve; other -> overseas.
   - tag: reject_aaaa
     type: sequence
     args:
@@ -153,7 +155,7 @@ __LOCAL_SECONDARY_UPSTREAMS__
           - qtype 28
         exec: reject 0
 
-  - tag: private_client
+  - tag: proxy_client
     type: sequence
     args:
       # Explicit overrides take precedence over downloaded lists.
@@ -188,7 +190,7 @@ __LOCAL_SECONDARY_UPSTREAMS__
         exec: accept
       - exec: goto remote_resolve
 
-  - tag: public_client
+  - tag: other_client
     type: sequence
     args:
       - matches:
@@ -204,9 +206,9 @@ __LOCAL_SECONDARY_UPSTREAMS__
           - has_resp
         exec: accept
       - matches:
-          - client_ip 172.22.0.0/16
-        exec: goto private_client
-      - exec: goto public_client
+          - client_ip __CLIENT_CIDRS__
+        exec: goto proxy_client
+      - exec: goto other_client
 
   - tag: dot_853
     type: tcp_server

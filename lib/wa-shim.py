@@ -22,7 +22,7 @@ RESOLVERS = [x.strip() for x in os.environ.get("WA_SHIM_RESOLVER", "1.1.1.1,8.8.
 SELF_IPS = {x.strip() for x in os.environ.get("WA_SHIM_SELF_IPS", "").split(",") if x.strip()}
 SELF_IPS.update({"127.0.0.1", "::1", "0.0.0.0", "::"})
 ALLOW = []
-for value in os.environ.get("WA_SHIM_ALLOW_CIDR", "172.22.0.0/16,127.0.0.0/8").split(","):
+for value in os.environ.get("WA_SHIM_ALLOW_CIDR", "127.0.0.0/8").split(","):
     try:
         ALLOW.append(ipaddress.ip_network(value.strip(), strict=False))
     except ValueError:

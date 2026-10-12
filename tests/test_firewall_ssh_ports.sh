@@ -80,7 +80,7 @@ got="$(PGW_FW_MARK="${mark_absent}" PGW_NFT_CONF="${tmp}/nftables.conf" PGW_IPT_
 [[ "$got" == "preserve" ]] || fail "legacy nftables fingerprint must not opt a reinstall into managed mode: got '${got}'"
 
 # The same rule applies to old project-managed iptables rulesets.
-printf '*filter\n:INPUT DROP [0:0]\n-A INPUT -s 172.22.0.0/16 -p tcp -j ACCEPT\nCOMMIT\n' > "${tmp}/managed.rules"
+printf '*filter\n:INPUT DROP [0:0]\n-A INPUT -s 103.143.92.0/23 -p tcp -j ACCEPT\nCOMMIT\n' > "${tmp}/managed.rules"
 got="$(PGW_FW_MARK="${mark_absent}" PGW_NFT_CONF="${tmp}/none" PGW_IPT_RULES="${tmp}/managed.rules" FIREWALL_MODE='' resolve_firewall_mode)"
 [[ "$got" == "preserve" ]] || fail "legacy iptables fingerprint must not opt a reinstall into managed mode: got '${got}'"
 

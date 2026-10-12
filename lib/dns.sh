@@ -301,6 +301,49 @@ set_custom_dns() {
     echo "Local DNS: $local_dns"
 }
 
+# Change which public source networks are treated as clients: they receive
+# the server IP for proxied domains and may reach the reverse proxy.
+set_client_cidrs() {
+    routing_lock
+    local cidrs backup_dir f
+    [[ -n "${1:-}" ]] || { err "Usage: $0 --set-client-cidrs \"<cidr> [cidr...]\""; exit 1; }
+    cidrs="$(CLIENT_CIDRS="" normalize_client_cidrs "$1")" || { err "Client CIDRs not changed"; exit 1; }
+    local files=("${CLIENT_CIDRS_FILE}" "${CONF_DIR}/wa-shim.env" "${PGW_EXIT_NFT}")
+    backup_dir="$(mktemp -d)"
+    for f in "${files[@]}"; do
+        [[ -f "$f" ]] && cp -a "$f" "${backup_dir}/${f//\//__}"
+    done
+    restore_client_cidrs_backup() {
+        local b
+        for f in "${files[@]}"; do
+            b="${backup_dir}/${f//\//__}"
+            if [[ -f "$b" ]]; then cp -a "$b" "$f"; else rm -f "$f"; fi
+        done
+    }
+    mkdir -p "$(dirname "${CLIENT_CIDRS_FILE}")"
+    printf '%s\n' "$cidrs" > "${CLIENT_CIDRS_FILE}"
+    if [[ -x /usr/local/bin/update-mosdns-rules.sh ]] && ! /usr/local/bin/update-mosdns-rules.sh --offline; then
+        restore_client_cidrs_backup
+        /usr/local/bin/update-mosdns-rules.sh --offline >/dev/null 2>&1 || true
+        rm -rf "$backup_dir"
+        err "mosdns config update failed; client CIDRs rolled back"
+        exit 1
+    fi
+    if [[ -f "${CONF_DIR}/wa-shim.env" ]]; then
+        sed -i -E "s#^WA_SHIM_ALLOW_CIDR=.*#WA_SHIM_ALLOW_CIDR=${cidrs// /,},127.0.0.0/8#" "${CONF_DIR}/wa-shim.env"
+        systemctl restart wa-shim 2>/dev/null || true
+    fi
+    # Re-applies the egress-marking exclusions and, per FIREWALL_MODE, the
+    # reverse-proxy allow rules (preserve only prints what to open).
+    if ! setup_firewall; then
+        rm -rf "$backup_dir"
+        err "Firewall update failed; DNS policy already uses the new client CIDRs"
+        exit 1
+    fi
+    rm -rf "$backup_dir"
+    ok "Client CIDRs updated: $cidrs"
+}
+
 set_dot_domain() {
     local new_domain="${1:-}" resolved="" old_conf_domain="" old_mosdns_domain="" old_cert_basename=""
     [[ -n "$new_domain" ]] || { err "Usage: $0 --set-dot-domain <domain>"; exit 1; }

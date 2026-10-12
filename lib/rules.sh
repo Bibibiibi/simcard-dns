@@ -390,7 +390,7 @@ proxy_domain() (
     (regen_smart)
     "$updater" --offline
     committed=1
-    ok "Domain '${domain}' -> ${target}; DNS override applies to private gateway clients only; named exit requires active smart routing"
+    ok "Domain '${domain}' -> ${target}; DNS override applies to client networks only; named exit requires active smart routing"
 )
 
 show_rules() {

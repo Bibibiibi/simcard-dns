@@ -40,7 +40,7 @@ install_deps() {
             if apt-get -o DPkg::Lock::Timeout="$apt_lock_timeout" install -y -qq \
                 build-essential git wget curl ca-certificates \
                 libev-dev "${pcre_dev_pkg}" libudns-dev libssl-dev \
-                autoconf automake libtool pkg-config \
+                autoconf automake libtool pkg-config gettext \
                 certbot python3-certbot-dns-cloudflare \
                 python3 python3-pip jq libcap2-bin \
                 nftables qrencode wireguard-tools >>"$pkg_log" 2>&1; then
@@ -54,7 +54,7 @@ install_deps() {
             if "$PKG_MGR" install -y -q \
                 gcc gcc-c++ make git wget curl ca-certificates \
                 libev-devel pcre-devel openssl-devel \
-                autoconf automake libtool pkgconfig \
+                autoconf automake libtool pkgconfig gettext-devel \
                 certbot python3-certbot-dns-cloudflare \
                 python3 python3-pip jq libcap-ng-utils \
                 nftables qrencode wireguard-tools >>"$pkg_log" 2>&1; then
@@ -204,7 +204,11 @@ install_sniproxy() {
             git checkout --quiet --detach "$sniproxy_commit" || exit 1
             [[ "$(git rev-parse HEAD)" == "$sniproxy_commit" ]] || exit 1
             DEBEMAIL="root@localhost" DEBFULLNAME="root" ./autogen.sh || exit 1
-            ./configure --prefix=/usr/local --sysconfdir=/etc --enable-dns || exit 1
+            # Do not pass --enable-dns: upstream assigns dns="$withval" for it,
+            # which is empty, so the flag actually disables libudns. The
+            # default is dns=yes; the wildcard "*:80" tables require it.
+            ./configure --prefix=/usr/local --sysconfdir=/etc || exit 1
+            grep -q -- '-DHAVE_LIBUDNS=1' src/Makefile || { echo "sniproxy configured without libudns"; exit 1; }
             make -j"${MAKE_JOBS:-$(nproc)}" || exit 1
             make install || exit 1
         ) >>"$build_log" 2>&1; then
@@ -254,7 +258,7 @@ EOF
 }
 
 install_whatsapp_shim() {
-    local shim_dns self_ips
+    local shim_dns self_ips client_nets
     info "Installing iOS WhatsApp no-SNI shim..."
     [[ -f "${LIB_DIR}/wa-shim.py" ]] || { err "wa-shim.py not found in ${LIB_DIR}"; return 1; }
     mkdir -p "${BASE_DIR}/bin" "${CONF_DIR}"
@@ -265,6 +269,7 @@ install_whatsapp_shim() {
         grep -qxF "$domain" /etc/mosdns/gfwlist-extra-local.txt || echo "$domain" >> /etc/mosdns/gfwlist-extra-local.txt
     done
     shim_dns="${REMOTE_DNS:-$(cat "${CONF_DIR}/.remote_dns" 2>/dev/null || printf '%s ' "${DEFAULT_REMOTE_DNS[@]}")}"
+    client_nets="$(current_client_cidrs)" || return 1
     self_ips="${PUBLIC_IP:-},127.0.0.1,::1,"
     self_ips+="$(hostname -I 2>/dev/null | tr ' ' ',' | tr -d '\n')"
     cat > "${CONF_DIR}/wa-shim.env" <<EOF
@@ -274,7 +279,7 @@ WA_SHIM_BACKEND=127.0.0.1:8443
 WA_SHIM_WA_HOST=g.whatsapp.net
 WA_SHIM_RESOLVER=$(first_plain_dns "$shim_dns"),8.8.8.8
 WA_SHIM_SELF_IPS=${self_ips}
-WA_SHIM_ALLOW_CIDR=172.22.0.0/16,127.0.0.0/8
+WA_SHIM_ALLOW_CIDR=${client_nets// /,},127.0.0.0/8
 EOF
     chmod 600 "${CONF_DIR}/wa-shim.env"
     cat > /etc/systemd/system/wa-shim.service <<EOF
@@ -364,6 +369,7 @@ install_mosdns() {
     chmod +x /usr/local/bin/update-mosdns-rules.sh
     echo "$DOMAIN" > /etc/mosdns/.domain
     echo "$PUBLIC_IP" > /etc/mosdns/.public_ip
+    current_client_cidrs > "${CLIENT_CIDRS_FILE}" || return 1
     write_quic_dns_file "$REMOTE_DNS" || return $?
     echo "$REMOTE_DNS" > /etc/mosdns/.remote_dns
     echo "$LOCAL_DNS" > /etc/mosdns/.local_dns
@@ -643,8 +649,12 @@ install_ctl_entrypoint() {
             err "lib/${f} not found in ${LIB_DIR}; cannot build a self-contained 5gpn-ctl"
             return 1
         fi
-        install -m 0644 "${LIB_DIR}/${f}" "${ctl_lib}/${f}"
+        # When run from the installed 5gpn-ctl, LIB_DIR already is ctl_lib;
+        # copying a file onto itself makes install(1) fail.
+        [[ "${LIB_DIR}/${f}" -ef "${ctl_lib}/${f}" ]] && continue
+        install -m 0644 "${LIB_DIR}/${f}" "${ctl_lib}/${f}" || return 1
     done
+    [[ "${SCRIPT_PATH}" -ef "${ctl_dir}/5gpn-ctl" ]] && return 0
     install -m 0755 "${SCRIPT_PATH}" "${ctl_dir}/5gpn-ctl"
 }
 
@@ -780,6 +790,7 @@ show_status() {
     local cur_exit="local"
     [[ -f "${CONF_DIR}/current-exit" ]] && cur_exit="$(cat "${CONF_DIR}/current-exit" 2>/dev/null || echo local)"
     echo "Egress exit: ${cur_exit}"
+    echo "Client CIDRs: $(current_client_cidrs 2>/dev/null || echo invalid)"
     if [[ -f /etc/mosdns/.cache_size ]]; then
         local cs; cs="$(cat /etc/mosdns/.cache_size 2>/dev/null || echo '?')"
         echo "Mem profile: $([[ "$cs" -le 50000 ]] 2>/dev/null && echo low-memory || echo standard) (mosdns cache=${cs})"

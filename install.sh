@@ -38,6 +38,10 @@ MIHOMO_VERSION_DEFAULT="1.19.28"
 MOSDNS_VERSION_DEFAULT="5.3.4"
 DEFAULT_REMOTE_DNS=("1.1.1.1" "8.8.8.8" "9.9.9.9")
 DEFAULT_LOCAL_DNS=("101.226.4.6" "218.30.118.6" "180.76.76.76" "119.29.29.29")
+# Default client networks: CTMO / China Telecom (Macau), AS136167 announced
+# IPv4 prefixes (2026-10). Other carriers: --set-client-cidrs / CLIENT_CIDRS.
+DEFAULT_CLIENT_CIDRS="74.119.64.0/21 103.143.92.0/23 202.75.248.0/22 203.223.17.0/24 203.223.18.0/23 203.223.20.0/24"
+CLIENT_CIDRS_FILE="/etc/mosdns/.client_cidrs"
 bootstrap_err() { printf 'Error: %s\n' "$*" >&2; }
 
 # Raw entrypoint bootstrap runs in a subshell: traps and globals cannot leak.
@@ -303,6 +307,10 @@ Options:
                  Set primary/fallback DNS upstreams and reload mosdns/sniproxy.
                  remote is used for international/proxy-side resolution; local
                  is used for ChinaList direct resolution.
+  --set-client-cidrs "<cidr> [cidr...]"
+                 Set the public client networks (e.g. a mobile carrier's
+                 egress ranges) that get proxied DNS answers and may use the
+                 reverse proxy. Default: CTMO (AS136167) prefixes.
   --list-exits   List configured egress exits and which one is active
   --check-exits  Test reachability of each exit's upstream node (UP/DOWN)
   --add-exit <name> [wg.conf | proxy-uri]
@@ -353,6 +361,8 @@ Environment variables (for non-interactive use):
   LOCAL_DNS      Domestic ChinaList DNS upstreams, IP[:port] list
   DNS_UPSTREAMS / OVERSEAS_DNS / PRIVATE_OVERSEAS_DNS / SNIPROXY_DNS
                  Backward-compatible aliases for REMOTE_DNS
+  CLIENT_CIDRS   Public client networks for proxied DNS + reverse proxy, IPv4
+                 CIDR list (default: CTMO AS136167); kept across upgrades
   EMAIL          Email for Let's Encrypt
   TG_BOT_TOKEN   Telegram bot token; enables the control bot when set
   TG_ADMIN_IDS   Comma-separated Telegram numeric IDs allowed to operate the bot
@@ -400,6 +410,8 @@ install_stage_certificate() {
     configure_dns_upstreams || return $?
     printf 'REMOTE_DNS=%q\n' "$REMOTE_DNS" >> "$INSTALL_STATE"
     printf 'LOCAL_DNS=%q\n' "$LOCAL_DNS" >> "$INSTALL_STATE"
+    CLIENT_CIDRS="$(current_client_cidrs)" || { err "Invalid CLIENT_CIDRS"; return 1; }
+    printf 'CLIENT_CIDRS=%q\n' "$CLIENT_CIDRS" >> "$INSTALL_STATE"
 }
 
 install_stage_deploy() {
@@ -671,6 +683,11 @@ case "${1:-}" in
     --set-dns)
         check_root
         set_custom_dns "${2:-}" "${3:-}" "${4:-}"
+        ;;
+    --set-client-cidrs)
+        check_root
+        shift
+        set_client_cidrs "$*"
         ;;
     --setup-whatsapp)
         check_root

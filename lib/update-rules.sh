@@ -14,6 +14,9 @@ MOSDNS_TEMPLATE="${BASE_DIR}/config.yaml.template"
 MOSDNS_CONF="${BASE_DIR}/config.yaml"
 DEFAULT_REMOTE_DNS=("1.1.1.1" "8.8.8.8" "9.9.9.9")
 DEFAULT_LOCAL_DNS=("101.226.4.6" "218.30.118.6" "180.76.76.76" "119.29.29.29")
+# Default client networks: CTMO / China Telecom (Macau), AS136167 announced
+# IPv4 prefixes (2026-10). Other carriers: --set-client-cidrs / CLIENT_CIDRS.
+DEFAULT_CLIENT_CIDRS="74.119.64.0/21 103.143.92.0/23 202.75.248.0/22 203.223.17.0/24 203.223.18.0/23 203.223.20.0/24"
 
 normalize_domain() {
     local domain="${1:-}"
@@ -192,12 +195,14 @@ PY
 }
 
 render_config() {
-    local server_ip remote_dns local_dns cache_size
+    local server_ip remote_dns local_dns cache_size client_cidrs
     local remote_primary remote_secondary local_primary local_secondary
     server_ip=$(cat "$BASE_DIR/.public_ip" 2>/dev/null || ip route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]\+\).*/\1/p' | head -n1 || true)
     [[ -n "$server_ip" ]] || server_ip="127.0.0.1"
     remote_dns=$(cat "$BASE_DIR/.remote_dns" 2>/dev/null || printf '%s ' "${DEFAULT_REMOTE_DNS[@]}")
     local_dns=$(cat "$BASE_DIR/.local_dns" 2>/dev/null || printf '%s ' "${DEFAULT_LOCAL_DNS[@]}")
+    client_cidrs=$(cat "$BASE_DIR/.client_cidrs" 2>/dev/null || true)
+    [[ -n "$client_cidrs" ]] || client_cidrs="$DEFAULT_CLIENT_CIDRS"
     cache_size=$(cat "$BASE_DIR/.cache_size" 2>/dev/null || echo 500000)
     [[ "$cache_size" =~ ^[0-9]+$ ]] || cache_size=500000
     remote_primary=$(yaml_upstreams "$remote_dns" "1.1.1.1 8.8.8.8 9.9.9.9" primary udp)
@@ -206,14 +211,19 @@ render_config() {
     local_secondary=$(yaml_upstreams "$local_dns" "101.226.4.6 218.30.118.6 180.76.76.76 119.29.29.29" all tcp)
 
     python3 - "$MOSDNS_TEMPLATE" "$MOSDNS_CONF.tmp" "$server_ip" "$cache_size" \
-        "$remote_primary" "$remote_secondary" "$local_primary" "$local_secondary" <<'PY'
-import sys
+        "$remote_primary" "$remote_secondary" "$local_primary" "$local_secondary" "$client_cidrs" <<'PY'
+import ipaddress, sys
 
 template, output, server_ip, cache_size = sys.argv[1:5]
+nets = [ipaddress.IPv4Network(x, strict=False) for x in sys.argv[9].replace(",", " ").split()]
+if not nets or any(n.prefixlen == 0 for n in nets):
+    sys.exit("Invalid client CIDR list: " + sys.argv[9])
+client_cidrs = " ".join(str(n) for n in ipaddress.collapse_addresses(nets))
 with open(template, encoding="utf-8") as source:
     content = source.read()
 replacements = {
     "__SERVER_IP__": server_ip,
+    "__CLIENT_CIDRS__": client_cidrs,
     "__CACHE_SIZE__": cache_size,
     "__REMOTE_PRIMARY_UPSTREAMS__": sys.argv[5],
     "__REMOTE_SECONDARY_UPSTREAMS__": sys.argv[6],
@@ -334,7 +344,7 @@ trap 'exit 143' TERM HUP
 for file in "${files[@]}"; do
     [[ ! -e "$live/$file" ]] || { cp -a "$live/$file" "$backup/$file"; cp -a "$live/$file" "$stage/$file"; }
 done
-for file in .remote_dns .local_dns .public_ip .cache_size config.yaml.template gfwlist-extra-local.txt domain-overrides.conf; do
+for file in .remote_dns .local_dns .public_ip .cache_size .client_cidrs config.yaml.template gfwlist-extra-local.txt domain-overrides.conf; do
     [[ ! -e "$live/$file" ]] || cp -a "$live/$file" "$stage/$file"
 done
 # Certificates are read-only input for validation, never part of publication.

@@ -69,6 +69,46 @@ sudo /opt/5gpn/bin/5gpn-ctl --import-rules /path/to/rule.conf
 sudo /opt/5gpn/bin/5gpn-ctl --set-policy Netflix hk
 ```
 
+## 手机卡接入
+
+手机卡直接通过公网连接服务器。运营商分配给手机的**公网出口网段**就是客户端网段：这些来源发起的 DoT 查询中，非国内域名会解析为服务器 IP，流量经公网进入服务器的 TCP/QUIC 代理。
+
+默认客户端网段是 CTMO（中国电信澳门，AS136167）公布的 IPv4 前缀：
+
+```text
+74.119.64.0/21 103.143.92.0/23 202.75.248.0/22 203.223.17.0/24 203.223.18.0/23 203.223.20.0/24
+```
+
+使用 CTMO 卡时安装后即可使用；其他运营商按下面步骤修改。
+
+1. **确认手机出口 IP**：关闭 Wi-Fi、只用蜂窝数据，在手机浏览器打开任意 IP 查询网站；或者先把手机私人 DNS 指向服务器，再在服务器上查看 DoT 连接来源：
+
+   ```bash
+   sudo ss -tn state established '( sport = :853 )'
+   ```
+
+2. **确定网段**：移动网络出口 IP 通常来自运营商 NAT 地址池并会变化。多换几次飞行模式记录 IP，或用 `whois <IP>` / BGP 查询工具找到运营商公布的整段前缀。网段过小会时灵时不灵，过大则会让更多陌生用户能使用你的代理。
+
+3. **写入客户端网段**（会替换整个列表；空格或逗号分隔，单个 IP 自动视为 `/32`）：
+
+   ```bash
+   sudo /opt/5gpn/bin/5gpn-ctl --set-client-cidrs "103.143.92.0/23 203.0.113.0/24 198.51.100.0/22"
+   sudo /opt/5gpn/bin/5gpn-ctl --status   # 查看 Client CIDRs
+   ```
+
+   首次安装可直接设置 `CLIENT_CIDRS="203.0.113.0/24 198.51.100.0/22"`。
+
+4. **放行端口**：默认 `preserve` 模式不改主机防火墙，命令会提示需要放行的端口。请在主机防火墙**和云厂商安全组**中，只对这些网段放行 TCP `80/443` 和 UDP `443`；不要对全网开放。`FIREWALL_MODE=auto` 会自动追加放行规则，但修改网段后不会删除旧网段的规则，需要自行清理。
+
+5. **手机设置**：Android 私人 DNS 或 iOS 描述文件按[客户端配置](../README.md#客户端配置)填写即可，手机上不用安装代理软件。
+
+注意事项：
+
+- 这个模式依赖 SNI 透明代理，TLS 握手中的域名是明文。只有当手机到服务器这一段公网**不经过会按 SNI 阻断的网络**时才稳定可用。例如手机卡漫游时数据回到归属地出口，就满足这个条件；如果数据在本地出网，被封锁域名的握手可能被重置。DoT（853）是加密的，不受此影响。
+- 网段内任何人都能使用这台服务器的 80/443 代理，所以网段越精确越好。为防止成为开放代理，`0.0.0.0/0` 会被拒绝。
+- 连接 Wi-Fi 时，查询来自家里的宽带 IP，不在客户端网段内，会自动按普通公网来源解析，不会把流量送进代理。
+- 当前出口（WireGuard / URI 节点 / smart）对这些客户端同样生效。发往客户端网段的回包不会被打标进出口隧道。
+
 ## Telegram Bot
 
 ```bash
@@ -77,7 +117,7 @@ sudo /opt/5gpn/bin/5gpn-ctl --setup-tgbot
 
 按提示输入 Bot Token 和管理员数字 ID。可先通过 Telegram 的 ID 查询机器人获取自己的 ID；启用后也可向本 Bot 发送 `/id` 核对。不要公开 Token。已有配置会用于后续设置。
 
-命令：`/start` 打开面板、`/status` 状态、`/exits` 出口、`/rules` 分流、`/cancel` 取消输入、`/id` 查 ID。
+命令：`/start` 打开面板、`/status` 状态、`/clients` 当前连入 IP（同主菜单 👥 按钮，标出是否在客户端网段内）、`/exits` 出口、`/rules` 分流、`/cancel` 取消输入、`/id` 查 ID。
 
 添加出口：`🌐 出口 -> ➕ 添加出口`，直接粘贴节点链接（`ss:// vmess:// trojan:// vless:// hysteria2:// tuic:// anytls:// socks5:// http://`），备注会自动作为出口名。
 
@@ -104,9 +144,9 @@ sudo /opt/5gpn/bin/5gpn-ctl --setup-tgbot
 
 | 端口 | 协议 | 范围 | 用途 |
 | --- | --- | --- | --- |
-| 80 | TCP | 私网（ACME 时临时公网） | HTTP 透明代理 / HTTP-01 |
-| 443 | TCP | `172.22.0.0/16` | wa-shim（无 SNI / HTTPS fail-open 到 sniproxy 回环 8443） |
-| 443 | UDP | `172.22.0.0/16` | QUIC 透明代理 |
+| 80 | TCP | 客户端网段（ACME 时临时全网） | HTTP 透明代理 / HTTP-01 |
+| 443 | TCP | 客户端网段 | wa-shim（无 SNI / HTTPS fail-open 到 sniproxy 回环 8443） |
+| 443 | UDP | 客户端网段 | QUIC 透明代理 |
 | 853 | TCP | 公网 | DNS over TLS |
 | 8111 | TCP | 公网 | iOS 描述文件下载 |
 
@@ -114,6 +154,7 @@ sudo /opt/5gpn/bin/5gpn-ctl --setup-tgbot
 
 ```bash
 DOMAIN="dns.example.com"        # DoT 域名（必需）
+CLIENT_CIDRS="103.143.92.0/23 ..."  # 客户端网段（运营商出口网段），默认 CTMO（见“手机卡接入”）
 EMAIL="admin@example.com"       # ACME 邮箱
 REMOTE_DNS="1.1.1.1,8.8.8.8,9.9.9.9"     # 海外 DNS 池
 LOCAL_DNS="101.226.4.6,218.30.118.6,180.76.76.76,119.29.29.29"  # 国内 DNS 竞速池（4路 UDP 并发）
@@ -164,16 +205,16 @@ sudo /opt/5gpn/bin/5gpn-ctl --update-rules
 
 **从旧 sing-box 版本升级？** 内核级迁移：旧 sing-box 服务和二进制会被移除，旧配置备份到 `/etc/5gpn/exits/singbox-backup/`。URI 出口需用原节点链接重新 `--add-exit`；`rules.conf` 和策略映射保留，出口补齐后重新 `--set-rules` / `--set-exit smart`。当前 WireGuard 出口不受影响。
 
-**WhatsApp Patch 的风险控制？** wa-shim 仅对私网和 loopback 来源启用 ED/WA 分流；未知协议、TLS ClientHello、短包和超时都 fail-open 到 sniproxy；以 `pxout` 用户运行，跟随当前出口出站。
+**WhatsApp Patch 的风险控制？** wa-shim 仅对客户端网段和 loopback 来源启用 ED/WA 分流；未知协议、TLS ClientHello、短包和超时都 fail-open 到 sniproxy；以 `pxout` 用户运行，跟随当前出口出站。
 
 
 ## 运行原理
 
-面向 5G NPN / N6 互通、私网终端出海和轻量透明代理场景：
+面向手机卡经公网接入的轻量透明代理场景：
 
-- `172.22.0.0/16` 私网客户端把 DNS/DoT 指向网关。
+- 客户端网段（运营商公网出口网段，默认 CTMO）的手机把私人 DNS（DoT）指向网关。
 - ChinaList 域名（所有来源）走国内 DNS 竞速代理（4 路 UDP 并发 + TCP fallback + 海外兜底含 `22.22.22.22`），保持本地访问体验。
-- 内网来源非 ChinaList 的 A 查询返回服务器 IP，流量进入 TCP/QUIC 代理。
+- 客户端网段来源非 ChinaList 的 A 查询返回服务器 IP，流量进入 TCP/QUIC 代理。
 - 其他来源：被墙域名不劫持，正常海外解析；其他域名也正常海外解析。
 - wa-shim / sniproxy / quic-proxy 负责 WhatsApp Noise、SNI/Host 和 QUIC 转发，出站由当前出口控制。
 - 所有来源的 AAAA 查询返回 NOERROR/NODATA，保持现有 IPv4-only 透明代理策略，避免 IPv6 绕过代理。

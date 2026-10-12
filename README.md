@@ -1,6 +1,6 @@
 # 5GPN-X
 
-服务器端透明代理网关：让指定私网中的设备通过加密 DNS 和透明代理访问网络，客户端无需安装代理软件。默认代理客户端网段为 `172.22.0.0/16`；其他来源可使用 DNS，但不会自动获得透明代理能力。
+服务器端透明代理网关：手机卡通过公网连接服务器，只需设置私人 DNS（DoT），即可按域名分流并经服务器透明代理访问网络，手机上无需安装代理软件。只有客户端网段（运营商公网出口网段，默认 CTMO / 中国电信澳门 AS136167）内的来源会获得代理；其他来源可使用 DNS，但只做普通解析（见 [手机卡接入](docs/GUIDE.md#手机卡接入)）。
 
 ## 环境要求
 
@@ -14,7 +14,7 @@
 curl -fsSL https://raw.githubusercontent.com/Xiuyixx/5GPN-X/main/install.sh | sudo bash
 ```
 
-- **安装前**：把域名指向服务器公网 IP，并放行所需端口：公网 TCP `853`；证书验证用 TCP `80`；`172.22.0.0/16` 私网客户端使用 TCP `80/443` 和 UDP `443`；iOS 描述文件使用 TCP `8111`。
+- **安装前**：把域名指向服务器公网 IP，并放行所需端口：公网 TCP `853`；证书验证用 TCP `80`；客户端网段（运营商出口网段）使用 TCP `80/443` 和 UDP `443`；iOS 描述文件使用 TCP `8111`。
 - **首次安装**：按提示输入域名，等待安装完成。
 - **更新版本**：重新执行上面的命令，已有配置会保留。
 - **遇到错误**：先查看终端给出的日志，不要删除配置或备份。
@@ -35,6 +35,7 @@ sudo /opt/5gpn/bin/5gpn-ctl --update-rules        # 更新 GFWList/ChinaList 并
 sudo /opt/5gpn/bin/5gpn-ctl --renew-cert          # 续期证书
 sudo /opt/5gpn/bin/5gpn-ctl --set-dot-domain dns.example.com
 sudo /opt/5gpn/bin/5gpn-ctl --set-dns "1.1.1.1 8.8.8.8" "223.5.5.5 119.29.29.29"
+sudo /opt/5gpn/bin/5gpn-ctl --set-client-cidrs "103.143.92.0/23 203.0.113.0/24"  # 客户端网段
 sudo /opt/5gpn/bin/5gpn-ctl -ios                  # 重新生成 iOS 描述文件和二维码
 sudo /opt/5gpn/bin/5gpn-ctl --list-exits          # 列出出口
 sudo /opt/5gpn/bin/5gpn-ctl --check-exits         # 检测出口连通性
@@ -45,13 +46,13 @@ sudo /opt/5gpn/bin/5gpn-ctl --uninstall           # 卸载
 ## 功能与原理
 
 - **加密 DNS**：设备通过 DoT 连接服务器，国内域名优先使用国内 DNS。
-- **透明代理**：指定私网设备访问其他域名时，由服务器转发 TCP / QUIC 流量。
+- **透明代理**：客户端网段内的手机访问非国内域名时，由服务器转发 TCP / QUIC 流量。
 - **多种出口**：支持本机直出、WireGuard，以及 SOCKS5、SS、VMess、Trojan、VLESS、Hysteria2、TUIC、AnyTLS、HTTP 等节点。
 - **按需分流**：可按域名、IP 或规则集选择不同出口。
 - **聊天管理**：通过 Telegram Bot 查看状态、切换出口、管理规则和 DNS。
 - **低内存适配**：内存不超过 1 GB 时自动减少资源占用。
 
-当前透明代理按 IPv4 设计，DNS 不返回 IPv6 地址。默认仅为 `172.22.0.0/16` 网段提供透明代理；其他来源正常解析，不会自动进入代理。技术细节见 [运行原理](docs/GUIDE.md#运行原理)。
+当前透明代理按 IPv4 设计，DNS 不返回 IPv6 地址。仅为客户端网段提供透明代理（默认 CTMO 网段，可用 `--set-client-cidrs` 修改）；其他来源正常解析，不会自动进入代理。技术细节见 [运行原理](docs/GUIDE.md#运行原理)。
 
 ## 更多用法
 

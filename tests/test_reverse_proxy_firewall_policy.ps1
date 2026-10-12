@@ -30,13 +30,16 @@ function Assert-NotContains {
     }
 }
 
-Assert-Contains $install 'ip saddr 172.22.0.0/16 tcp dport { 80, 443 } accept' 'nft TCP reverse proxy private allow'
-Assert-Contains $install 'ip saddr 172.22.0.0/16 udp dport 443 accept' 'nft UDP reverse proxy private allow'
+Assert-Contains $install 'ip saddr { __CLIENT_CIDRS__ } tcp dport { 80, 443 } accept' 'nft TCP reverse proxy client allow'
+Assert-Contains $install 'ip saddr { __CLIENT_CIDRS__ } udp dport 443 accept' 'nft UDP reverse proxy client allow'
+Assert-Contains $install 'DEFAULT_CLIENT_CIDRS="74.119.64.0/21 103.143.92.0/23 202.75.248.0/22 203.223.17.0/24 203.223.18.0/23 203.223.20.0/24"' 'default client networks (CTMO)'
+Assert-NotContains $install '172.22.0.0/16' 'private client network is no longer built in'
+Assert-NotContains $install 'ip saddr 0.0.0.0/0' 'reverse proxy must never be opened to every source'
 Assert-Contains $install 'tcp dport 853 meter dns_rate_dot' 'nft DoT per-IP QPS rate limit'
 Assert-NotContains $install 'meter dns_rate_tcp53' 'obsolete nft DNS TCP/53 rate limit'
 Assert-NotContains $install 'meter dns_rate_udp53' 'obsolete nft DNS UDP/53 rate limit'
-Assert-Contains $install 'iptables -A INPUT -s 172.22.0.0/16 -p tcp -m multiport --dports 80,443 -j ACCEPT' 'iptables TCP reverse proxy private allow'
-Assert-Contains $install 'iptables -A INPUT -s 172.22.0.0/16 -p udp --dport 443 -j ACCEPT' 'iptables UDP reverse proxy private allow'
+Assert-Contains $install 'iptables -A INPUT -s "${net}" -p tcp -m multiport --dports 80,443 -j ACCEPT' 'iptables TCP reverse proxy client allow'
+Assert-Contains $install 'iptables -A INPUT -s "${net}" -p udp --dport 443 -j ACCEPT' 'iptables UDP reverse proxy client allow'
 Assert-Contains $install 'hashlimit-name dns_dot' 'iptables DoT per-IP QPS rate limit'
 Assert-Contains $install 'iptables -F INPUT' 'iptables fallback flushes stale public reverse proxy rules'
 Assert-Contains $install '--comment 5gpn-cert-http' 'temporary HTTP rule is tagged'
@@ -46,8 +49,8 @@ Assert-Contains $install '--pre-hook /usr/local/bin/5gpn-open-cert-http.sh' 'cer
 Assert-Contains $install '--post-hook /usr/local/bin/5gpn-restore-firewall.sh' 'certbot post-hook restores firewall'
 Assert-Contains $install '/etc/letsencrypt/renewal-hooks/pre/10-5gpn-open-http.sh' 'automatic renew pre-hook'
 Assert-Contains $install '/etc/letsencrypt/renewal-hooks/post/90-5gpn-restore-firewall.sh' 'automatic renew post-hook'
-Assert-Contains $install 'Firewall configured (reverse proxy whitelist: 172.22.0.0/16)' 'firewall status message'
-Assert-Contains $readme '172.22.0.0/16' 'README documents reverse proxy whitelist'
+Assert-Contains $install 'Firewall configured (reverse proxy whitelist: $(current_client_cidrs))' 'firewall status message'
+Assert-Contains $readme '--set-client-cidrs' 'README documents the client network whitelist'
 Assert-Contains $readme '80/443' 'README documents reverse proxy ports'
 Assert-Contains $readme '443' 'README documents reverse proxy port'
 

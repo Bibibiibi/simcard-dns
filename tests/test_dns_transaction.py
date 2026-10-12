@@ -138,11 +138,11 @@ esac
         self.assertEqual((self.dns / 'override-block.txt').read_text(), 'block.example\n')
         config = (self.dns / 'config.yaml').read_text()
         self.assertNotIn('.rules-stage.', config)
-        private = config.split('- tag: private_client')[1].split('- tag: public_client')[0]
-        self.assertLess(private.index('$override_proxy_domains'), private.index('$china_domains'))
-        self.assertLess(private.index('$override_block_domains'), private.index('$override_proxy_domains'))
-        public = config.split('- tag: public_client')[1].split('- tag: main_sequence')[0]
-        self.assertNotIn('override_', public)
+        proxied = config.split('- tag: proxy_client')[1].split('- tag: other_client')[0]
+        self.assertLess(proxied.index('$override_proxy_domains'), proxied.index('$china_domains'))
+        self.assertLess(proxied.index('$override_block_domains'), proxied.index('$override_proxy_domains'))
+        other = config.split('- tag: other_client')[1].split('- tag: main_sequence')[0]
+        self.assertNotIn('override_', other)
 
     def test_restart_failure_restores_entire_snapshot(self):
         before = {p.name: p.read_bytes() for p in self.dns.iterdir()}

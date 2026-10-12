@@ -248,6 +248,37 @@ get_public_ip() {
     info "Public IP detected: $PUBLIC_IP"
 }
 
+# Client networks: public source ranges (typically a mobile carrier's egress
+# pool) that get synthetic DNS answers (server IP) and may use the TCP 80/443 +
+# UDP 443 reverse proxy. Accepts comma/space separated IPv4 CIDRs or bare IPs and prints a
+# collapsed, space-separated list. 0.0.0.0/0 is refused: it would make the
+# SNI proxy an open proxy for the whole Internet.
+normalize_client_cidrs() {
+    python3 - "${1:-}" <<'PY'
+import ipaddress, sys
+nets = []
+for item in sys.argv[1].replace(",", " ").split():
+    try:
+        net = ipaddress.IPv4Network(item, strict=False)
+    except ValueError:
+        sys.exit(f"invalid IPv4 CIDR: {item}")
+    if net.prefixlen == 0:
+        sys.exit("0.0.0.0/0 would turn the gateway into an open proxy")
+    nets.append(net)
+if not nets:
+    sys.exit("empty client CIDR list")
+print(" ".join(str(n) for n in ipaddress.collapse_addresses(nets)))
+PY
+}
+
+# Effective client networks: CLIENT_CIDRS env > persisted file > default.
+current_client_cidrs() {
+    local value="${CLIENT_CIDRS:-}"
+    [[ -n "$value" ]] || value="$(cat "${CLIENT_CIDRS_FILE}" 2>/dev/null || true)"
+    [[ -n "$value" ]] || value="${DEFAULT_CLIENT_CIDRS}"
+    normalize_client_cidrs "$value"
+}
+
 ensure_proxy_user() {
     if id -u "${EXIT_USER}" >/dev/null 2>&1; then
         return 0

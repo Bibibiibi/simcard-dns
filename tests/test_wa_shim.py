@@ -6,7 +6,7 @@ import os
 import struct
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-os.environ.update(WA_SHIM_ALLOW_CIDR="172.22.0.0/16", WA_SHIM_SELF_IPS="127.0.0.1")
+os.environ.update(WA_SHIM_ALLOW_CIDR="103.143.92.0/23", WA_SHIM_SELF_IPS="127.0.0.1")
 spec = importlib.util.spec_from_file_location("wa_shim", os.path.join(ROOT, "lib", "wa-shim.py"))
 wa = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(wa)
@@ -16,7 +16,7 @@ assert wa.classify(b"WA\x06\x03x") == ("whatsapp", "known")
 assert wa.classify(b"ED\x00\x99x") == ("whatsapp", "new")
 assert wa.classify(b"\x16\x03\x01") == ("backend", "")
 assert wa.classify(b"E") == ("backend", "")
-assert wa.source_allowed("172.22.1.2") and not wa.source_allowed("8.8.8.8")
+assert wa.source_allowed("103.143.92.184") and not wa.source_allowed("8.8.8.8")
 
 question = wa.qname("g.whatsapp.net")
 txid = 1234
@@ -41,7 +41,7 @@ async def fail_open_on_edge_error():
         return ["1.1.1.1"]
     wa.relay, wa.resolve_edge, wa.source_allowed = fake_relay, fake_resolve, lambda _src: True
     class Writer:
-        def get_extra_info(self, _name): return ("172.22.1.2", 1234)
+        def get_extra_info(self, _name): return ("103.143.92.184", 1234)
         def close(self): pass
     reader = asyncio.StreamReader()
     reader.feed_data(b"ED\0\1")
