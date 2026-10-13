@@ -259,15 +259,16 @@ import ipaddress, sys
 nets = []
 for item in sys.argv[1].replace(",", " ").split():
     try:
-        net = ipaddress.IPv4Network(item, strict=False)
+        nets.append(ipaddress.IPv4Network(item, strict=False))
     except ValueError:
         sys.exit(f"invalid IPv4 CIDR: {item}")
-    if net.prefixlen == 0:
-        sys.exit("0.0.0.0/0 would turn the gateway into an open proxy")
-    nets.append(net)
 if not nets:
     sys.exit("empty client CIDR list")
-print(" ".join(str(n) for n in ipaddress.collapse_addresses(nets)))
+# Check after collapsing: "0.0.0.0/1 128.0.0.0/1" is 0.0.0.0/0 too.
+nets = list(ipaddress.collapse_addresses(nets))
+if any(n.prefixlen == 0 for n in nets):
+    sys.exit("0.0.0.0/0 would turn the gateway into an open proxy")
+print(" ".join(str(n) for n in nets))
 PY
 }
 

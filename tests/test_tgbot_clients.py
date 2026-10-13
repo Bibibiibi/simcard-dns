@@ -58,6 +58,8 @@ class ClientsTest(unittest.TestCase):
             row((server, 443), ("103.143.92.184", 6837), "01"),
             row((server, 22), ("192.0.2.73", 50000), "01", inode=501),
             row((server, 22), ("77.90.185.20", 4002), "01", inode=502),
+            # OpenSSH >= 9.8: per-connection processes are "sshd-session".
+            row((server, 22), ("198.51.100.77", 4003), "01", inode=503),
             # wa-shim -> sniproxy backend on loopback: internal, not a client.
             row(("127.0.0.1", 8443), ("127.0.0.1", 40000), "01"),
             # Outbound proxy connection: local port is not a listening port.
@@ -79,17 +81,24 @@ class ClientsTest(unittest.TestCase):
         fake_proc(self.proc, 21, "sshd", "sshd: root [net]", [502])
         # A non-sshd process holding the same socket must not count.
         fake_proc(self.proc, 30, "python3", "sshd: evil@notty", [502])
+        fake_proc(self.proc, 40, "sshd-session", "sshd-session: alice [priv]", [503])
+        fake_proc(self.proc, 41, "sshd-session", "sshd-session: alice@pts/0", [503])
 
     def card(self):
         return bot.op_clients((str(self.tcp), str(self.tcp6)), str(self.cidrs),
                               str(self.proc), SSH_LOG)
 
-    def test_inbound_clients_by_ip_and_port(self):
-        clients = bot.inbound_clients((str(self.tcp), str(self.tcp6)))
-        self.assertEqual(clients, {
+    def test_inbound_conns_by_ip_and_port(self):
+        conns = bot._inbound_conns((str(self.tcp), str(self.tcp6)))
+        seen = {}
+        for ip, port, _ in conns:
+            seen.setdefault(ip, {}).setdefault(port, 0)
+            seen[ip][port] += 1
+        self.assertEqual(seen, {
             ipaddress.ip_address("103.143.92.184"): {443: 2, 853: 1},
             ipaddress.ip_address("192.0.2.73"): {22: 1},
             ipaddress.ip_address("77.90.185.20"): {22: 1},
+            ipaddress.ip_address("198.51.100.77"): {22: 1},
         })
 
     def test_card_marks_client_networks(self):
@@ -108,6 +117,8 @@ class ClientsTest(unittest.TestCase):
         self.assertIn("🔓 SSH 已登录：root", logged.split("<code>")[0])
         self.assertIn("🔒 SSH 未登录（认证中），24h 内失败 2 次", attacker.split("<code>")[0])
         self.assertNotIn("evil", text)
+        session = text.split("<code>198.51.100.77</code>")[1].split("<code>")[0]
+        self.assertIn("🔓 SSH 已登录：alice", session)
         self.assertIn("失败尝试 3 次，来自 2 个 IP", text)
         self.assertIn("成功登录：<code>192.0.2.73</code>（root）", text)
 

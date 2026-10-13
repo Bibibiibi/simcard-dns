@@ -506,6 +506,7 @@ upgrade_code() (
         /etc/mosdns/override-direct.txt /etc/mosdns/override-proxy.txt /etc/mosdns/override-block.txt
         /var/lib/5gpn-quic/remote-dns /usr/local/bin/update-mosdns-rules.sh /usr/local/bin/mosdns
         /etc/systemd/system/quic-proxy.service /etc/systemd/system/5gpn-mihomo@.service
+        /etc/5gpn/pgw-exit.nft
         /etc/letsencrypt/renewal-hooks/deploy/99-reload-mosdns.sh)
     local active=() units=(mosdns sniproxy quic-proxy wa-shim 5gpn-tgbot 5gpn-mihomo@smart)
     for unit in "${units[@]}"; do
@@ -581,6 +582,10 @@ upgrade_code() (
         rm -f "$EXITS_DIR/smart.yaml.tmp"
         printf 'router\n' > "$EXITS_DIR/smart.type"
     fi
+    # The egress-marking table is generated code too (self-loop guard, reply
+    # exclusion): regenerate and reload it so fixes reach upgraded hosts.
+    upgrade_stage=egress-rules
+    apply_pgw_exit_rules
     upgrade_stage=renew-hook
     mkdir -p /etc/letsencrypt/renewal-hooks/deploy
     install -m 0755 "${LIB_DIR}/renew-hook.sh" /etc/letsencrypt/renewal-hooks/deploy/99-reload-mosdns.sh

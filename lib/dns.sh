@@ -307,25 +307,37 @@ set_client_cidrs() {
     routing_lock
     local cidrs backup_dir f
     [[ -n "${1:-}" ]] || { err "Usage: $0 --set-client-cidrs \"<cidr> [cidr...]\""; exit 1; }
-    cidrs="$(CLIENT_CIDRS="" normalize_client_cidrs "$1")" || { err "Client CIDRs not changed"; exit 1; }
+    cidrs="$(normalize_client_cidrs "$1")" || { err "Client CIDRs not changed"; exit 1; }
+    # Every later consumer (wa-shim env, pgw_exit, host firewall) resolves the
+    # list through current_client_cidrs; pin it so an exported CLIENT_CIDRS
+    # from the install shell cannot override what was just written.
+    # shellcheck disable=SC2034 # read by current_client_cidrs in common.sh
+    CLIENT_CIDRS="$cidrs"
     local files=("${CLIENT_CIDRS_FILE}" "${CONF_DIR}/wa-shim.env" "${PGW_EXIT_NFT}")
     backup_dir="$(mktemp -d)"
     for f in "${files[@]}"; do
         [[ -f "$f" ]] && cp -a "$f" "${backup_dir}/${f//\//__}"
     done
-    restore_client_cidrs_backup() {
+    # Restore all three inputs and re-apply them so DNS, wa-shim and the
+    # egress table agree again on the previous list.
+    rollback_client_cidrs() {
         local b
         for f in "${files[@]}"; do
             b="${backup_dir}/${f//\//__}"
             if [[ -f "$b" ]]; then cp -a "$b" "$f"; else rm -f "$f"; fi
         done
+        unset CLIENT_CIDRS
+        [[ -x /usr/local/bin/update-mosdns-rules.sh ]] && /usr/local/bin/update-mosdns-rules.sh --offline >/dev/null 2>&1
+        systemctl restart wa-shim 2>/dev/null || true
+        if command -v nft >/dev/null 2>&1 && [[ -f "${PGW_EXIT_NFT}" ]]; then
+            nft -f "${PGW_EXIT_NFT}" 2>/dev/null || true
+        fi
+        rm -rf "$backup_dir"
     }
     mkdir -p "$(dirname "${CLIENT_CIDRS_FILE}")"
     printf '%s\n' "$cidrs" > "${CLIENT_CIDRS_FILE}"
     if [[ -x /usr/local/bin/update-mosdns-rules.sh ]] && ! /usr/local/bin/update-mosdns-rules.sh --offline; then
-        restore_client_cidrs_backup
-        /usr/local/bin/update-mosdns-rules.sh --offline >/dev/null 2>&1 || true
-        rm -rf "$backup_dir"
+        rollback_client_cidrs
         err "mosdns config update failed; client CIDRs rolled back"
         exit 1
     fi
@@ -336,12 +348,18 @@ set_client_cidrs() {
     # Re-applies the egress-marking exclusions and, per FIREWALL_MODE, the
     # reverse-proxy allow rules (preserve only prints what to open).
     if ! setup_firewall; then
-        rm -rf "$backup_dir"
-        err "Firewall update failed; DNS policy already uses the new client CIDRs"
+        rollback_client_cidrs
+        err "Firewall update failed; client CIDRs rolled back (DNS, wa-shim and egress rules restored)"
         exit 1
     fi
     rm -rf "$backup_dir"
     ok "Client CIDRs updated: $cidrs"
+    # managed must be requested explicitly on every run; a host that was set
+    # up that way still has the OLD list in its INPUT rules unless asked.
+    if [[ "$(resolve_firewall_mode 2>/dev/null)" != managed && -f "${PGW_FW_MARK:-/etc/5gpn/.firewall-managed}" ]]; then
+        warn "This host's firewall was installed in managed mode; its 80/443 allow rules still use the previous client list."
+        warn "Re-run with FIREWALL_MODE=managed to update them: FIREWALL_MODE=managed $0 --set-client-cidrs \"$cidrs\""
+    fi
 }
 
 set_dot_domain() {

@@ -221,9 +221,7 @@ resolve_firewall_mode() {
     echo preserve
 }
 write_pgw_exit_nft() {
-    local client_set self_set
-    client_set="$(current_client_cidrs)" || return 1
-    client_set="${client_set// /, }"
+    local self_set
     self_set="$(self_ipv4_addrs)" || return 1
     self_set="${self_set// /, }"
     mkdir -p "$(dirname "${PGW_EXIT_NFT}")"
@@ -232,17 +230,18 @@ write_pgw_exit_nft() {
 # Switchable egress: mark proxy ("pxout") outbound so policy routing can send it
 # into a WireGuard tunnel; clamp MSS on tunnel interfaces. Self-contained so it
 # can be (re)loaded after any firewall reload without duplicating rules.
-# Traffic to the client networks and any private/loopback range is NOT marked,
-# so proxy replies to clients (including public mobile ranges) still take the
-# normal route (not the tunnel). Proxy connections back to this host's own
-# 80/443 are rejected: a Host/SNI naming this server would loop forever.
+# Replies on connections the client opened (conntrack reply direction) and
+# traffic to private/loopback ranges are NOT marked, so proxy replies to any
+# client take the normal route (not the tunnel) whatever its source network.
+# Proxy connections back to this host's own 80/443 are rejected: a Host/SNI
+# naming this server would loop forever.
 table inet pgw_exit
 delete table inet pgw_exit
 table inet pgw_exit {
     chain mark_out {
         type route hook output priority -150; policy accept;
+        ct direction reply return
         ip daddr { 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10 } return
-        ip daddr { ${client_set} } return
         meta l4proto { tcp, udp } th dport 53 return
         meta skuid "pxout" meta mark set 0x1
     }
@@ -264,10 +263,11 @@ apply_pgw_exit_rules() {
         write_pgw_exit_nft || return 1
         nft -f "${PGW_EXIT_NFT}" 2>/dev/null || true
     elif command -v iptables >/dev/null 2>&1 && id -u "${EXIT_USER}" >/dev/null 2>&1; then
-        local pn pp client_nets self_net
-        client_nets="$(current_client_cidrs)" || return 1
+        local pn pp self_net
         while iptables -t mangle -D OUTPUT -m owner --uid-owner "${EXIT_USER}" -j MARK --set-mark "${EXIT_MARK}" 2>/dev/null; do :; done
-        for pn in 127.0.0.0/8 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 100.64.0.0/10 ${client_nets}; do
+        while iptables -t mangle -D OUTPUT -m owner --uid-owner "${EXIT_USER}" -m conntrack --ctdir REPLY -j RETURN 2>/dev/null; do :; done
+        iptables -t mangle -A OUTPUT -m owner --uid-owner "${EXIT_USER}" -m conntrack --ctdir REPLY -j RETURN 2>/dev/null || true
+        for pn in 127.0.0.0/8 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 100.64.0.0/10; do
             while iptables -t mangle -D OUTPUT -m owner --uid-owner "${EXIT_USER}" -d "$pn" -j RETURN 2>/dev/null; do :; done
             iptables -t mangle -A OUTPUT -m owner --uid-owner "${EXIT_USER}" -d "$pn" -j RETURN 2>/dev/null || true
         done

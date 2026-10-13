@@ -215,10 +215,11 @@ render_config() {
 import ipaddress, sys
 
 template, output, server_ip, cache_size = sys.argv[1:5]
-nets = [ipaddress.IPv4Network(x, strict=False) for x in sys.argv[9].replace(",", " ").split()]
+nets = list(ipaddress.collapse_addresses(
+    ipaddress.IPv4Network(x, strict=False) for x in sys.argv[9].replace(",", " ").split()))
 if not nets or any(n.prefixlen == 0 for n in nets):
-    sys.exit("Invalid client CIDR list: " + sys.argv[9])
-client_cidrs = " ".join(str(n) for n in ipaddress.collapse_addresses(nets))
+    sys.exit("Invalid client CIDR list (empty or 0.0.0.0/0): " + sys.argv[9])
+client_cidrs = " ".join(str(n) for n in nets)
 with open(template, encoding="utf-8") as source:
     content = source.read()
 replacements = {

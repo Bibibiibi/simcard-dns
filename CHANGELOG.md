@@ -4,6 +4,10 @@
 
 - 改为公网手机卡接入：移除内置的 `172.22.0.0/16` 内网客户端网段，客户端网段改为运营商公网出口网段，默认使用 CTMO（中国电信澳门，AS136167）公布的 IPv4 前缀。新增 `--set-client-cidrs` 与安装变量 `CLIENT_CIDRS`；mosdns 来源匹配（分支更名为 `proxy_client` / `other_client`）、防火墙放行、wa-shim 白名单及出口打标排除统一读取该配置；拒绝 `0.0.0.0/0`，避免成为开放代理。**未设置过客户端网段的旧安装升级后会从 `172.22.0.0/16` 切换为 CTMO 网段**，如需保留请先执行 `--set-client-cidrs`。
 - Telegram Bot 新增 `/clients` 与主菜单「👥 连入 IP」：按来源 IP 汇总当前已建立的入站 TCP 连接（DNS/代理/SSH 端口及连接数），并标出是否在客户端网段内；SSH 连接按 sshd 进程名区分「🔓 已登录（用户）」与「🔒 未登录（认证中）」，并汇总近 24 小时失败尝试次数与成功登录来源。
+- `--upgrade` 现在会重新生成并加载 `/etc/5gpn/pgw-exit.nft`（并纳入升级回滚快照），自连防护等出口规则修复能到达升级的主机，而不只是新安装。
+- 出口打标改用 `ct direction reply` 排除回包，不再依赖客户端网段列表：任何来源的客户端回包都不会被送进 WireGuard 隧道（iptables 后端为 `--ctdir REPLY`）。
+- `--set-client-cidrs`：防火墙步骤失败时完整回滚 DNS、wa-shim 与出口规则；不再被安装时导出的 `CLIENT_CIDRS` 覆盖；主机以 managed 模式安装而本次未指定 `FIREWALL_MODE=managed` 时给出提醒。`0.0.0.0/1 128.0.0.0/1` 这类合并后等于 `0.0.0.0/0` 的列表在入口即拒绝。
+- Telegram Bot 连入 IP：识别 OpenSSH 9.8+ 的 `sshd-session` 进程（Debian 13 / Fedora 41+ / Ubuntu 24.10+），登录状态不再缺失。
 - 修复代理自连死循环：HTTP Host 或 TLS SNI 指向本机（公网 IP、网卡 IP、本机域名）时，sniproxy 会把请求转发给自己并无限循环，一个请求即可耗尽文件描述符。`pgw_exit` 表新增 `no_self_loop` 链（iptables 后端为对应 OUTPUT 规则），拒绝 `pxout` 用户连向本机 80/443（含 UDP 443）。
 - 修复用已安装的 `5gpn-ctl --setup-tgbot` 安装 Bot 时，因把模块复制到自身（`are the same file`）而中断安装的问题。
 - 修复全新 Debian 12 上 sniproxy `autogen.sh` 因缺少 gettext 的 `AC_LIB_*` m4 宏而编译失败：apt 依赖增加 `gettext`，dnf/yum 依赖增加 `gettext-devel`。

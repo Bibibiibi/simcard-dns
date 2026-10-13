@@ -25,6 +25,7 @@ unset CLIENT_CIDRS
 [[ "$(normalize_client_cidrs '198.51.100.9')" == "198.51.100.9/32" ]] || fail "bare IPs must become /32"
 normalize_client_cidrs 'not-a-cidr' 2>/dev/null && fail "invalid CIDRs must be rejected"
 normalize_client_cidrs '0.0.0.0/0' 2>/dev/null && fail "0.0.0.0/0 must be rejected (open proxy)"
+normalize_client_cidrs '0.0.0.0/1 128.0.0.0/1' 2>/dev/null && fail "halves that collapse to 0.0.0.0/0 must be rejected too"
 normalize_client_cidrs '' 2>/dev/null && fail "empty list must be rejected"
 
 # --- precedence: env > file > default -----------------------------------------
@@ -40,8 +41,13 @@ PUBLIC_IP=192.0.2.10 write_pgw_exit_nft
 grep -F 'meta skuid "pxout" ip daddr {' "${PGW_EXIT_NFT}" | grep -F 'tcp dport { 80, 443 } reject with tcp reset' \
     | grep -qF '192.0.2.10' || fail "proxy connections to this host's own 80/443 must be rejected"
 grep -F 'udp dport 443 reject' "${PGW_EXIT_NFT}" | grep -qF '127.0.0.0/8' || fail "QUIC self-loop must be rejected"
-grep -qF 'ip daddr { 103.143.92.0/23, 203.0.113.0/24 } return' "${PGW_EXIT_NFT}" \
-    || fail "client networks must be excluded from egress marking"
+# Replies to clients must never be marked into the tunnel, for every source
+# network, not only the configured ones: match by conntrack direction.
+grep -qF 'ct direction reply return' "${PGW_EXIT_NFT}" \
+    || fail "reply-direction packets must be excluded from egress marking"
+reply_line=$(grep -n 'ct direction reply return' "${PGW_EXIT_NFT}" | cut -d: -f1)
+mark_line=$(grep -n 'meta mark set 0x1' "${PGW_EXIT_NFT}" | cut -d: -f1)
+[[ "$reply_line" -lt "$mark_line" ]] || fail "reply exclusion must precede the mark rule"
 grep -qF 'meta skuid "pxout" meta mark set 0x1' "${PGW_EXIT_NFT}" || fail "egress marking must remain"
 
 # --- mosdns rendering uses the stored list, defaulting on upgrade -------------
@@ -69,9 +75,13 @@ grep -qF 'client_ip 103.143.92.0/23 203.0.113.0/24' "${mosdns_dir}/config.yaml" 
 grep -qF '__CLIENT_CIDRS__' "${mosdns_dir}/config.yaml" && fail "placeholder must be substituted"
 echo "0.0.0.0/0" > "${mosdns_dir}/.client_cidrs"
 render 2>/dev/null && fail "renderer must refuse an open-proxy client list"
+echo "0.0.0.0/1 128.0.0.0/1" > "${mosdns_dir}/.client_cidrs"
+render 2>/dev/null && fail "renderer must refuse halves that collapse to 0.0.0.0/0"
 
 # --- CLI wiring ----------------------------------------------------------------
 grep -qF -- '--set-client-cidrs)' "${root}/install.sh" || fail "--set-client-cidrs must be dispatched"
+grep -qF 'apply_pgw_exit_rules' "${root}/install.sh" || fail "--upgrade must regenerate the egress table (self-loop guard)"
+grep -qF '/etc/5gpn/pgw-exit.nft' "${root}/install.sh" || fail "--upgrade must snapshot pgw-exit.nft for rollback"
 grep -qF '.client_cidrs config.yaml.template' "${root}/lib/update-rules.sh" \
     || fail "staged renders must see the stored client list"
 

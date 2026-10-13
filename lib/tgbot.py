@@ -780,21 +780,14 @@ def _inbound_conns(tables=TCP_TABLES):
             if port in listening and not ip.is_loopback]
 
 
-def inbound_clients(tables=TCP_TABLES):
-    """{remote_ip: {local_port: count}} for established inbound TCP sessions."""
-    clients = {}
-    for ip, port, _ in _inbound_conns(tables):
-        ports = clients.setdefault(ip, {})
-        ports[port] = ports.get(port, 0) + 1
-    return clients
-
-
 def sshd_socket_titles(inodes, proc_root="/proc"):
     """{socket_inode: [sshd process titles]} for sockets held by sshd.
 
     sshd retitles its processes: "sshd: root [priv]"/"[net]" while
-    authenticating, "sshd: root@pts/0"/"root@notty" once logged in. Only sshd
-    processes are scanned, so proxies with many descriptors cost nothing.
+    authenticating, "sshd: root@pts/0"/"root@notty" once logged in. OpenSSH
+    >= 9.8 runs per-connection processes as "sshd-session" with the same
+    title scheme. Only those processes are scanned, so proxies with many
+    descriptors cost nothing.
     """
     want = {"socket:[%s]" % i: i for i in inodes if i}
     found = {}
@@ -806,7 +799,7 @@ def sshd_socket_titles(inodes, proc_root="/proc"):
         return found
     for pid in pids:
         base = os.path.join(proc_root, pid)
-        if _read_file(os.path.join(base, "comm")) != "sshd":
+        if _read_file(os.path.join(base, "comm")) not in SSHD_COMMS:
             continue
         try:
             title = open(os.path.join(base, "cmdline"), "rb").read()
@@ -827,7 +820,8 @@ def sshd_socket_titles(inodes, proc_root="/proc"):
     return found
 
 
-SSH_LOGGED_IN_RE = re.compile(r"^sshd: ([^\s@\[]+)@")
+SSHD_COMMS = ("sshd", "sshd-session")
+SSH_LOGGED_IN_RE = re.compile(r"^sshd(?:-session)?: ([^\s@\[]+)@")
 SSH_FAILED_RE = re.compile(
     r"^(?:Connection closed by|Disconnected from) .*?(\d{1,3}(?:\.\d{1,3}){3}) port \d+ \[preauth\]$")
 SSH_ACCEPTED_RE = re.compile(r"^Accepted \S+ for (\S+) from (\d{1,3}(?:\.\d{1,3}){3}) ")
