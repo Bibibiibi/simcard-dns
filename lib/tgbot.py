@@ -1730,7 +1730,7 @@ def ios_back(cb):
 # Keyboards
 # --------------------------------------------------------------------------- #
 def main_menu_text():
-    return "5GPN-X 1.1.1\n选择一个操作："
+    return "5GPN-X\n选择一个操作："
 
 
 def main_menu():
