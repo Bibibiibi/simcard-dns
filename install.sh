@@ -193,8 +193,13 @@ if [[ -d "${SOURCE_DIR}/.git" ]]; then
         git -C "${SOURCE_DIR}" checkout --quiet --detach "$COMMIT"
     fi
 elif [[ -e "${SOURCE_DIR}" ]]; then
-    err "Source destination exists but is not a git checkout; refusing to remove it"
-    exit 1
+    # Historical installers could leave a plain source tree without .git.
+    # Treat it like an untrusted/legacy checkout: prepare and verify the new
+    # tree first, then archive the old tree instead of deleting or overwriting
+    # it. Runtime configuration remains under /opt/5gpn and is unaffected.
+    info "Existing source is not a Git checkout; preparing a clean checkout and archiving the old tree"
+    stage="$(stage_source)" || exit 1
+    replace_source_atomically "$stage" || exit 1
 else
     stage="$(stage_source)" || exit 1
     mv -T -- "$stage" "$SOURCE_DIR"

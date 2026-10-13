@@ -120,14 +120,16 @@ exit "${FAIL_INSTALL:-0}"
         self.assertEqual((backups[0] / "manual-edit.txt").read_text(), "keep me\\n")
         self.assertTrue((backups[0] / ".git").is_dir())
 
-    def test_non_git_source_is_protected(self):
+    def test_non_git_source_is_archived_before_clean_checkout(self):
         self.source.mkdir()
         (self.source / "manual-edit.txt").write_text("keep me\\n")
         result = self.run_launcher()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("not a git checkout", result.stderr)
-        self.assertEqual((self.source / "manual-edit.txt").read_text(), "keep me\\n")
-        self.assertFalse(list(self.base.glob("source.backup-*/source")))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.source / "install.sh").read_text(),
+                         (self.base / "fixture.sh").read_text())
+        backups = list(self.base.glob("source.backup-*/source"))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual((backups[0] / "manual-edit.txt").read_text(), "keep me\\n")
 
     def test_checkout_alone_is_fresh(self):
         (self.source / ".git").mkdir(parents=True)
