@@ -98,21 +98,82 @@ sudo FIREWALL_MODE=managed simcard-dns --set-client-cidrs "<目前的客戶端�
 
 ## 常用指令
 
-所有指令都是 `sudo simcard-dns <選項>`（程式本體在 `/opt/simcard-dns/bin/simcard-dns`，設定在 `/etc/simcard-dns`）。從舊版 5GPN-X 升級的主機，第一次升級時會自動把 `/opt/5gpn`、`/etc/5gpn` 和 `5gpn-*` 服務搬到新名稱，舊版內容備份在 `/var/backups/simcard-dns/migrate.*`。
+以下指令都可以直接複製到伺服器執行，範例值（例如 `AS9231`、`hk`、`example.com`）請換成你自己的。程式本體在 `/opt/simcard-dns/bin/simcard-dns`，設定在 `/etc/simcard-dns`。從舊版 5GPN-X 升級的主機，第一次升級時會自動把 `/opt/5gpn`、`/etc/5gpn` 和 `5gpn-*` 服務搬到新名稱，舊版內容備份在 `/var/backups/simcard-dns/migrate.*`。
 
-| 用途 | 選項 |
-| --- | --- |
-| 看狀態 | `--status` |
-| 更新 GFWList / ChinaList | `--update-rules` |
-| 新增 / 切換 / 檢查出口 | `--add-exit <名稱> <設定檔或 URI>`、`--set-exit <名稱\|local\|smart>`、`--check-exits` |
-| 分流規則 | `--show-rules`、`--add-rule <規則>`、`--add-ruleset <網址> <目標>`、`--set-rules [檔案]` |
-| 客戶端白名單 | `--list-client-asns`、`--add-client-asn <ASN>`、`--del-client-asn <ASN>` |
-| 港澳台連接 | `--geo-allow on\|off\|update\|status` |
-| 網域與憑證 | `--set-dot-domain <網域>`、`--renew-cert` |
-| Cloudflare 隨機網域 | `--setup-cloudflare`（權杖以隱藏方式輸入）、`--reset-domain` |
-| DNS 上游 | `--set-dns "<國際 DNS>" "<國內 DNS>"` |
-| Telegram Bot | `--setup-tgbot` |
-| 解除安裝 | `--uninstall`（完整清除程式、服務、設定、狀態、日誌、原始碼與系統調校；憑證、備份、Go 會逐項詢問） |
+**狀態與更新**
+
+```bash
+sudo simcard-dns --status                 # 看所有服務狀態
+sudo simcard-dns --update-rules           # 更新 GFWList / ChinaList
+curl -fsSL https://raw.githubusercontent.com/Bibibiibi/simcard-dns/main/install.sh | sudo bash   # 升級到最新版
+```
+
+**出口**
+
+```bash
+sudo simcard-dns --list-exits             # 列出出口與目前使用中的出口
+sudo simcard-dns --check-exits            # 檢查每個出口節點連不連得上
+sudo simcard-dns --add-exit hk 'ss://2022-blake3-aes-128-gcm:PASSWORD@203.0.113.10:443'   # 新增節點出口
+sudo simcard-dns --set-exit smart         # 改用智慧分流（也可以填出口名稱或 local）
+sudo simcard-dns --del-exit hk            # 刪除出口
+```
+
+**分流規則**
+
+```bash
+sudo simcard-dns --show-rules                                          # 看目前規則
+sudo simcard-dns --add-rule 'DOMAIN-SUFFIX,openai.com,hk'              # 網域走 hk 出口
+sudo simcard-dns --add-rule 'DOMAIN-SUFFIX,example.com,local'          # 經伺服器本機 IP 出去
+sudo simcard-dns --add-ruleset 'https://example.com/openai.mrs' hk     # 整份規則集走 hk
+sudo simcard-dns --set-rules rules.conf                                # 用檔案取代全部規則
+```
+
+**客戶端白名單（你的電信卡）**
+
+```bash
+sudo simcard-dns --list-client-asns                                    # 看目前白名單
+sudo simcard-dns --lookup-client-asn AS9231                            # 先查業者名稱與網段數（不修改）
+sudo simcard-dns --add-client-asn AS9231                               # 加入整個業者
+sudo simcard-dns --del-client-asn AS9231                               # 移除業者
+sudo simcard-dns --set-client-cidrs "203.0.113.0/24 198.51.100.0/22"   # 直接指定網段（取代整份清單）
+```
+
+**港澳台連接**（SSH、853、8111 只接受香港、澳門、台灣與白名單網段）
+
+```bash
+sudo simcard-dns --geo-allow status       # 看狀態
+sudo simcard-dns --geo-allow on           # 開啟
+sudo simcard-dns --geo-allow off          # 關閉
+sudo simcard-dns --geo-allow update       # 立即更新地區名單
+```
+
+**網域與憑證**
+
+```bash
+sudo simcard-dns --set-dot-domain dns.example.com    # 換成自己的網域（A 記錄要先指向伺服器）
+sudo simcard-dns --renew-cert                        # 立即續期憑證
+sudo simcard-dns --setup-cloudflare                  # 接上 Cloudflare（權杖輸入時不顯示）
+sudo simcard-dns --reset-domain                      # 換成新的隨機網域，舊網域立即失效
+sudo simcard-dns -ios                                # 重新產生 iOS 描述檔與 QR Code
+```
+
+**DNS 上游**
+
+```bash
+sudo simcard-dns --set-dns "8.8.8.8 1.1.1.1" "223.5.5.5 119.29.29.29"   # 第一組是國際 DNS，第二組是國內 DNS
+```
+
+**Telegram Bot**
+
+```bash
+sudo simcard-dns --setup-tgbot            # 設定 Bot 權杖與管理員
+```
+
+**解除安裝**
+
+```bash
+sudo simcard-dns --uninstall              # 完整清除；憑證、備份、Go 會逐項詢問（預設保留）
+```
 
 完整說明請看文件：
 
