@@ -1,89 +1,143 @@
 # simcard-dns
 
-服务器端透明代理网关：手机卡通过公网连接服务器，只需设置私人 DNS（DoT），即可按域名分流并经服务器透明代理访问网络，手机上无需安装代理软件。只有客户端网段（运营商公网出口网段，默认 CTMO / 中国电信澳门 AS136167）内的来源会获得代理；其他来源可使用 DNS，但只做普通解析（见 [手机卡接入](docs/GUIDE.md#手机卡接入)）。
+> 手機只改一個「私人 DNS」，指定的網站就自動經由你的伺服器出去；其他流量照舊走手機自己的網路。不用裝任何 App。
 
-## 环境要求
+simcard-dns 是一套裝在 Linux 伺服器上的閘道。它同時是一台加密 DNS（DoT）伺服器和一台透明代理：你決定哪些網域要「繞到伺服器」，伺服器再決定這些連線從哪個出口離開（代理節點、伺服器本機，或直接拒絕）。
 
-主流 Linux 发行版（Ubuntu 20.04+ / Debian 11+ / RHEL 系 8+ / Fedora 39+），`amd64` 或 `arm64`，root 权限，公网 IPv4，以及一个 A 记录指向服务器的域名。内存最低 512 MB，推荐 1 GB+。
+目前版本：**1.1.3**（變更紀錄見 [CHANGELOG](CHANGELOG.md)）
 
-## 安装
+---
 
-项目版本：**1.1.3**（见 [CHANGELOG](CHANGELOG.md)）。首次安装和升级使用同一个入口：
+## 運作方式
+
+```text
+              ┌──────────── 伺服器 ────────────┐
+手機 ──DoT 853──▶ 網域命中分流規則？                │
+  │             ├─ 是 → 回答「伺服器 IP」            │
+  │             └─ 否 → 回答真實 IP（手機自己直連）  │
+  │                                             │
+  └──80/443、QUIC──▶ 透明代理 ──▶ 依規則選出口 ─────┼──▶ 節點 / 本機 / 拒絕
+              └────────────────────────────────┘
+```
+
+重點只有三個：
+
+1. **手機不裝東西**：Android 填私人 DNS、iOS 裝一個描述檔，就完成設定。
+2. **只繞規則裡的網域**：沒寫進規則的網站一律正常解析，由手機直連，不會拖慢日常使用。
+3. **只服務你的電信卡**：只有「客戶端網段」（你的電信業者公網出口，可用 ASN 一次加入）會拿到伺服器 IP，也只有它們能連到 80/443。其他人用這台 DNS 只會得到普通的解析結果。
+
+## 功能一覽
+
+| 類別 | 內容 |
+| --- | --- |
+| 分流 | 網域、網域後綴、關鍵字、GEOSITE、遠端規則集；目標可以是節點、伺服器本機（`local`）、不經伺服器（`direct`）或拒絕（`block`） |
+| 出口 | 本機直出、WireGuard，以及 SS、VMess、VLESS、Trojan、Hysteria2、TUIC、AnyTLS、SOCKS5、HTTP 節點 |
+| 客戶端 | 依 ASN 加入或移除電信業者網段，也可手動指定 CIDR |
+| 入口保護 | DoT 入口只放行目前網域的 SNI；接上 Cloudflare 後可一鍵換成新的隨機網域，舊網域立即失效 |
+| 港澳台連接 | 可選：SSH、853、8111 只接受香港、澳門、台灣與客戶端網段連入，名單每天自動更新 |
+| 管理 | 命令列 `5gpn-ctl` 與 Telegram Bot（狀態、出口、分流、白名單、連入 IP、網域） |
+| 資源 | 1 GB 以下記憶體自動切換低資源模式 |
+
+## 快速開始
+
+### 1. 準備
+
+| 項目 | 需求 |
+| --- | --- |
+| 系統 | Debian 11+、Ubuntu 20.04+、RHEL 系 8+、Fedora 39+ |
+| 架構 | `amd64` 或 `arm64` |
+| 記憶體 | 至少 512 MB，建議 1 GB 以上 |
+| 網路 | 公網 IPv4、root 權限 |
+| 網域 | 一個 A 記錄指向伺服器的網域（安裝時會用它申請憑證） |
+
+### 2. 安裝
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Bibibiibi/simcard-dns/main/install.sh | sudo bash
 ```
 
-- **安装前**：把域名指向服务器公网 IP，并放行所需端口：公网 TCP `853`；证书验证用 TCP `80`；客户端网段（运营商出口网段）使用 TCP `80/443` 和 UDP `443`；iOS 描述文件使用 TCP `8111`。
-- **首次安装**：按提示输入域名，等待安装完成。
-- **更新版本**：重新执行上面的命令，已有配置会保留。
-- **遇到错误**：先查看终端给出的日志，不要删除配置或备份。
+照提示輸入網域即可。之後要升級，再執行同一行指令；現有設定會保留，失敗會自動回滾。
 
-默认不接管主机防火墙。需要放行哪些端口、如何自动安装，以及失败怎么处理，见 [安装与排障指南](docs/INSTALL.md)。
+### 3. 告訴伺服器誰是你的手機
 
-## 客户端配置
-
-- Android：`设置 -> 网络和互联网 -> 私人 DNS`，填入安装时配置的域名。
-- iOS / iPadOS：扫描安装时生成的二维码，或访问 `http://<你的域名>:8111/ios-dot.mobileconfig` 安装描述文件（仅蜂窝网络启用 DoT，Wi-Fi 自动停用）。重新生成：`sudo /opt/5gpn/bin/5gpn-ctl -ios`（源码入口兼容：`./install.sh -ios`）
-- Windows / macOS / Linux：系统 DoT 设置或 Stubby / cloudflared 指向服务器域名 `853` 端口。
-
-## 管理命令
+預設的客戶端網段是中國電信澳門（CTMO，AS136167）。換成你的電信業者：
 
 ```bash
-sudo /opt/5gpn/bin/5gpn-ctl --status              # 查看状态
-sudo /opt/5gpn/bin/5gpn-ctl --update-rules        # 更新 GFWList/ChinaList 并重载 mosdns
-sudo /opt/5gpn/bin/5gpn-ctl --renew-cert          # 续期证书
-sudo /opt/5gpn/bin/5gpn-ctl --set-dot-domain dns.example.com
-sudo /opt/5gpn/bin/5gpn-ctl --setup-cloudflare      # 接入 Cloudflare（通配符证书）
-sudo /opt/5gpn/bin/5gpn-ctl --reset-domain          # 一键换成新的随机域名
-sudo /opt/5gpn/bin/5gpn-ctl --set-dns "1.1.1.1 8.8.8.8" "223.5.5.5 119.29.29.29"
-sudo /opt/5gpn/bin/5gpn-ctl --set-client-cidrs "103.143.92.0/23 203.0.113.0/24"  # 客户端网段
-sudo /opt/5gpn/bin/5gpn-ctl -ios                  # 重新生成 iOS 描述文件和二维码
-sudo /opt/5gpn/bin/5gpn-ctl --list-exits          # 列出出口
-sudo /opt/5gpn/bin/5gpn-ctl --check-exits         # 检测出口连通性
-sudo /opt/5gpn/bin/5gpn-ctl --setup-tgbot         # 配置 Telegram Bot
-sudo /opt/5gpn/bin/5gpn-ctl --uninstall           # 卸载
+sudo /opt/5gpn/bin/5gpn-ctl --lookup-client-asn AS9231   # 先看業者名稱與網段數
+sudo /opt/5gpn/bin/5gpn-ctl --add-client-asn AS9231
+# 或直接指定網段（會取代整份清單）
+sudo /opt/5gpn/bin/5gpn-ctl --set-client-cidrs "203.0.113.0/24 198.51.100.0/22"
 ```
 
-## 功能与原理
+### 4. 防火牆
 
-- **加密 DNS**：设备通过 DoT 连接服务器，国内域名优先使用国内 DNS。
-- **透明代理**：客户端网段内的手机访问分流规则里列出的域名时，由服务器转发 TCP / QUIC 流量；其余直连。
-- **多种出口**：支持本机直出、WireGuard，以及 SOCKS5、SS、VMess、Trojan、VLESS、Hysteria2、TUIC、AnyTLS、HTTP 等节点。
-- **按需分流**：只有分流规则命中的域名经过服务器，并按规则选择出口（节点 / 服务器本机 / 拒绝），未命中的直连。
-- **聊天管理**：通过 Telegram Bot 查看状态、切换出口、管理规则和 DNS。
-- **低内存适配**：内存不超过 1 GB 时自动减少资源占用。
+安裝程式預設不碰主機防火牆，只會提示要開哪些連接埠：
 
-当前透明代理按 IPv4 设计，DNS 不返回 IPv6 地址。仅为客户端网段提供透明代理（默认 CTMO 网段，可用 `--set-client-cidrs` 修改）；其他来源正常解析，不会自动进入代理。技术细节见 [运行原理](docs/GUIDE.md#运行原理)。
+| 連接埠 | 開給誰 | 用途 |
+| --- | --- | --- |
+| TCP 853 | 所有人 | DNS over TLS |
+| TCP 80/443、UDP 443 | **只有客戶端網段** | 透明代理（HTTP、HTTPS、QUIC） |
+| TCP 8111 | 所有人 | iOS 描述檔下載 |
+| TCP 80 | 申請憑證時暫時開放 | Let's Encrypt HTTP-01 |
 
-## 更多用法
+主機上沒有其他服務要顧的話，建議讓專案接管防火牆，80/443 就只會對客戶端網段開放：
 
-- [出口管理与智能分流](docs/GUIDE.md#出口管理)：添加节点、切换出口、按域名分流。
-- [Telegram Bot](docs/GUIDE.md#telegram-bot)：设置管理员并通过聊天面板管理。
-- [配置参考](docs/GUIDE.md#配置参考)：路径、端口、环境变量与防火墙选项。
-- [安装、升级与排障](docs/INSTALL.md)：备份、失败日志、证书与服务检查。
-
-## 项目结构
-
-```text
-install.sh       # 唯一安装入口，也是管理 CLI 的来源
-lib/             # 按职责拆分的 Shell 模块、Python/Go 组件与配置模板
-docs/            # 安装排障、日常管理和配置参考
-tests/           # Shell / Python / PowerShell / Go 回归测试
-.github/         # CI 与上游依赖版本检查
-VERSION          # 项目展示版本（不替代部署提交标记）
+```bash
+sudo FIREWALL_MODE=managed /opt/5gpn/bin/5gpn-ctl --set-client-cidrs "<目前的客戶端網段>"
 ```
 
-开发与维护说明见 [项目结构与检查](docs/DEVELOPMENT.md)。
+> ⚠️ 80/443 絕不能對全網開放，否則任何人都能把這台伺服器當開放代理用。
 
-## 免责声明
+### 5. 手機設定
 
-本项目仅用于合法的网络互通、企业专网、测试和学习场景。使用者需自行确认部署和使用行为符合所在地法律法规、云服务商条款及目标网络服务条款。项目不保证在所有网络环境下可用，也不承诺规避封锁、审查或主动探测；因误用、配置错误、服务中断等造成的后果由使用者自行承担。
+- **Android**：設定 → 網路和網際網路 → 私人 DNS → 填入安裝時的網域。
+- **iOS / iPadOS**：掃安裝完成時顯示的 QR Code，或用 Safari 開 `http://<你的網域>:8111/ios-dot.mobileconfig` 安裝描述檔（只在行動網路啟用 DoT）。要重新產生描述檔和 QR Code，執行 `sudo /opt/5gpn/bin/5gpn-ctl -ios`（原始碼目錄可用 `./install.sh -ios`）。
+- **電腦**：在系統的 DoT 設定，或用 Stubby、cloudflared 指向 `<你的網域>:853`。
 
-### 加固边界
+改完規則後如果手機沒有馬上生效，先切一下飛航模式或強制關閉 App：手機和 App 會快取 DNS、保留舊連線。
 
-- Go 下载使用官方 SHA256，sniproxy 源码固定 commit；修改依赖版本必须同步核验摘要，固定旧版本不等于自动获得上游安全更新。
-- Certbot 优先使用系统包；Python 依赖不兼容时停止并提示人工修复，不以 root 无约束升级 pip 包。
-- Telegram Bot 仍需要 root 执行服务管理、路由、防火墙及 `/etc` 配置写入。仅限制新文件权限和 core dump，不宣称已做非 root helper 隔离；贸然使用只读系统、私有网络或设备隔离会破坏现有管理功能。
-- 安装阶段失败会中止并报告。系统包、运行时网络规则和服务变更不支持跨阶段的全量事务回滚；请保留配置备份和控制台访问，在维护窗口安装。现有 DNS/出口局部恢复不等于整个安装可原子回退。
-- 项目版本见本页与 CHANGELOG；安装仍固定完整 Git commit，依赖版本不是项目版本。
+## 常用指令
+
+所有指令都是 `sudo /opt/5gpn/bin/5gpn-ctl <選項>`。內部路徑和指令名稱沿用 `5gpn`，方便既有主機直接升級。
+
+| 用途 | 選項 |
+| --- | --- |
+| 看狀態 | `--status` |
+| 更新 GFWList / ChinaList | `--update-rules` |
+| 新增 / 切換 / 檢查出口 | `--add-exit <名稱> <設定檔或 URI>`、`--set-exit <名稱\|local\|smart>`、`--check-exits` |
+| 分流規則 | `--show-rules`、`--add-rule <規則>`、`--add-ruleset <網址> <目標>`、`--set-rules [檔案]` |
+| 客戶端白名單 | `--list-client-asns`、`--add-client-asn <ASN>`、`--del-client-asn <ASN>` |
+| 港澳台連接 | `--geo-allow on\|off\|update\|status` |
+| 網域與憑證 | `--set-dot-domain <網域>`、`--renew-cert` |
+| Cloudflare 隨機網域 | `--setup-cloudflare`（權杖以隱藏方式輸入）、`--reset-domain` |
+| DNS 上游 | `--set-dns "<國際 DNS>" "<國內 DNS>"` |
+| Telegram Bot | `--setup-tgbot` |
+| 解除安裝 | `--uninstall` |
+
+完整說明請看文件：
+
+- [安裝、升級與排障](docs/INSTALL.md)
+- [日常管理與設定參考](docs/GUIDE.md)：出口、分流、手機卡接入、Bot、連接埠、環境變數
+- [開發與測試](docs/DEVELOPMENT.md)
+
+## 使用前要知道的事
+
+- **只處理 IPv4**：DNS 不回傳 IPv6 位址，透明代理也只走 IPv4。
+- **分流只看網域**：IP 類規則（IP-CIDR、GEOIP）只對已經進入伺服器的流量有效，`FINAL` 沒有作用。
+- **DNS 洩漏檢測看到伺服器或電信業者的 IP 是正常的**：DNS 在伺服器解析，WebRTC 的 STUN 走非 443 的 UDP，不經過伺服器。
+- **港澳台連接按登記國家判斷**：在當地使用、但登記在其他地區的雲端 IP 會被擋；開啟後人在其他地區用當地網路時無法 SSH，手機連當地 Wi‑Fi 時私人 DNS 也會失效（用白名單電信卡漫遊不受影響）。
+- **Bot 需要 root**：它要管理服務、路由和防火牆，請只把管理員 ID 給自己。
+
+## 安全設計
+
+- 下載的 Go、mihomo、mosdns 都比對固定的 SHA256，sniproxy 原始碼釘選在固定 commit；安裝也固定在完整的 Git commit。
+- 升級前會備份設定與程式碼，失敗時還原；但跨階段的系統套件與網路規則無法整體回滾，建議在維護時段操作並保留主控台存取。
+- Bot 與 Cloudflare 的權杖存成僅 root 可讀的檔案；Cloudflare 權杖輸入時不回顯。
+
+## 免責聲明
+
+本專案僅供合法的網路互通、測試與學習使用。部署前請自行確認符合當地法規、雲端業者條款與目標服務的使用條款。專案不保證在所有網路環境下可用，也不承諾規避任何審查或封鎖；因使用或設定錯誤造成的後果由使用者自行承擔。
+
+## 授權與致謝
+
+以 [MIT License](LICENSE) 釋出。本專案衍生自 [Xiuyixx/5GPN-X](https://github.com/Xiuyixx/5GPN-X)，在其基礎上改為電信卡公網接入，並加入規則驅動 DNS、ASN 白名單、DoT 入口守門、Cloudflare 網域重置與港澳台連接等功能。
