@@ -124,7 +124,7 @@ sudo /opt/simcard-dns/bin/simcard-dns --set-policy Netflix hk
    **注意**：如果主机没有防火墙（INPUT 全部放行），80/443 对所有人开放，任何知道服务器 IP 的人都能直接把它当开放代理用，扫描器很快就会找上门。没有其他防火墙需求时，推荐让项目接管 INPUT：
 
    ```bash
-   sudo FIREWALL_MODE=managed /opt/simcard-dns/bin/simcard-dns --set-client-cidrs "<当前客户端网段>"
+   sudo simcard-dns --set-firewall managed
    ```
 
    效果：80/443 和 UDP 443 只放行客户端网段；853、8111 和检测到的 SSH 端口对所有人开放；其余入站全部拒绝，规则开机自动加载。原规则备份为 `/etc/nftables.conf.pgw-backup`。853 不建议限制为客户端网段：Android 私人 DNS 在 Wi-Fi 下同样强制使用，限制后连 Wi-Fi 会无法解析。

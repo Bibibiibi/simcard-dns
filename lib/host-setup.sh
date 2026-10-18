@@ -594,6 +594,52 @@ setup_firewall() {
     esac
     ok "Firewall configured (reverse proxy whitelist: $(current_client_cidrs))"
 }
+# Fresh installs: offer to manage the INPUT firewall, asked up front. A host
+# with no firewall would otherwise expose the 80/443 proxy to everyone.
+collect_firewall_choice() {
+    [[ -z "${FIREWALL_MODE:-}" ]] || return 0
+    local other="" answer=""
+    if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
+        other=UFW
+    elif command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+        other=firewalld
+    fi
+    if [[ ! -t 0 ]]; then
+        warn "FIREWALL_MODE not set: the host firewall is left untouched. Without one, TCP 80/443 is open to everyone; set FIREWALL_MODE=managed to let simcard-dns manage it."
+        return 0
+    fi
+    info "接管防火墙后：80/443 与 UDP 443 只开放给客户端网段，SSH、853、8111 开放，其他入站拒绝；之后可在 Bot 开启港澳台连接。"
+    if [[ -n "$other" ]]; then
+        warn "检测到 ${other} 正在运行；接管会改用 nftables 规则并取代它。"
+        read -r -p "让 simcard-dns 接管防火墙？[y/N]: " answer || answer=""
+        [[ "$answer" =~ ^[Yy]$ ]] && FIREWALL_MODE=managed
+    else
+        read -r -p "让 simcard-dns 接管防火墙？（主机上还有其他对外服务请选 n）[Y/n]: " answer || answer=""
+        [[ "$answer" =~ ^[Nn]$ ]] || FIREWALL_MODE=managed
+    fi
+    if [[ "${FIREWALL_MODE:-}" == managed ]]; then
+        export FIREWALL_MODE
+    else
+        warn "防火墙保持不变：请自行只对客户端网段开放 TCP 80/443 与 UDP 443，否则任何人都能使用代理。"
+    fi
+    return 0
+}
+# --set-firewall managed: let simcard-dns own the INPUT firewall from now on
+# (the regional allowlist needs it). The first pre-project ruleset is kept as
+# /etc/nftables.conf.pgw-backup and restored by --uninstall.
+set_firewall_mode() {
+    case "${1:-}" in
+        managed) ;;
+        *) err "Usage: $0 --set-firewall managed"; exit 1 ;;
+    esac
+    routing_lock
+    FIREWALL_MODE=managed
+    if ! setup_firewall; then
+        err "Managed firewall could not be applied; the previous firewall is still in place"
+        exit 1
+    fi
+    ok "Firewall managed by simcard-dns: 80/443 only for the client networks; SSH ($(detect_ssh_ports)), 853, 8111 open"
+}
 open_cert_http_port() {
     info "Temporarily opening TCP/80 for Let's Encrypt HTTP-01..."
     if command -v nft >/dev/null 2>&1 && nft list table inet filter >/dev/null 2>&1; then
@@ -897,7 +943,7 @@ geo_allow_on() {
     routing_lock
     local conf="${PGW_NFT_CONF:-/etc/nftables.conf}" countries ports clients outside saved rc=0
     if ! command -v nft >/dev/null 2>&1 || ! grep -q 'include "/etc/simcard-dns/pgw-exit.nft"' "$conf" 2>/dev/null; then
-        err "The regional allowlist needs the managed nftables firewall (FIREWALL_MODE=managed)"
+        err "The regional allowlist needs the managed firewall; switch first with: simcard-dns --set-firewall managed"
         exit 1
     fi
     countries="$(geo_conf_get GEO_COUNTRIES "$GEO_DEFAULT_COUNTRIES")"
@@ -925,7 +971,7 @@ geo_allow_on() {
     if (( rc != 0 )) || ! load_geo_allow_nft; then
         geo_restore_conf "$saved"
         if (( rc == 2 )); then
-            err "The regional allowlist needs the managed nftables firewall (FIREWALL_MODE=managed)"
+            err "The regional allowlist needs the managed firewall; switch first with: simcard-dns --set-firewall managed"
         else
             err "Could not hook the regional allowlist into ${conf}; firewall unchanged"
         fi

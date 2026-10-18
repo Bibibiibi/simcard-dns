@@ -18,7 +18,7 @@
 curl -fsSL https://raw.githubusercontent.com/Bibibiibi/simcard-dns/main/install.sh | sudo bash
 ```
 
-安装开始时依次询问：Cloudflare API Token（不回显；能管理多个区域时让你选择）、Telegram Bot Token、管理员 Telegram ID。之后全自动：通过 Cloudflare DNS-01 签发 `*.dns.<区域>` 通配符证书（不需要 TCP 80），创建随机 DoT 域名 `<20 位随机>.dns.<区域>` 的 A 记录（仅 DNS），安装完成时显示该域名。证书邮箱可通过 `EMAIL` 设置。
+安装开始时依次询问：Cloudflare API Token（不回显；能管理多个区域时让你选择）、Telegram Bot Token、管理员 Telegram ID，以及是否让 simcard-dns 接管防火墙（默认是；检测到 UFW/firewalld 时默认否）。无交互安装不会自动接管，需要时设置 `FIREWALL_MODE=managed`，或装好后执行 `simcard-dns --set-firewall managed`。之后全自动：通过 Cloudflare DNS-01 签发 `*.dns.<区域>` 通配符证书（不需要 TCP 80），创建随机 DoT 域名 `<20 位随机>.dns.<区域>` 的 A 记录（仅 DNS），安装完成时显示该域名。证书邮箱可通过 `EMAIL` 设置。
 
 无交互环境请预先提供 `CF_API_TOKEN`、`TG_BOT_TOKEN`、`TG_ADMIN_IDS`（Token 管理多个区域时再加 `CF_ZONE`）：
 

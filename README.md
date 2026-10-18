@@ -86,7 +86,7 @@ sudo simcard-dns --set-client-cidrs "203.0.113.0/24 198.51.100.0/22"
 
 ### 4. 防火牆
 
-安裝程式預設不碰主機防火牆，只會提示要開哪些連接埠：
+安裝一開始會問「讓 simcard-dns 接管防火牆？」。主機上沒有其他對外服務就選 **Y**（預設），會照下表設定好；選 n 則不碰主機防火牆，你要自己照下表開放：
 
 | 連接埠 | 開給誰 | 用途 |
 | --- | --- | --- |
@@ -95,10 +95,10 @@ sudo simcard-dns --set-client-cidrs "203.0.113.0/24 198.51.100.0/22"
 | TCP 8111 | 所有人 | iOS 描述檔下載 |
 | TCP 80 | 只有自有網域模式（`DOMAIN`）申請憑證時暫時開放 | Let's Encrypt HTTP-01（Cloudflare 模式不需要） |
 
-主機上沒有其他服務要顧的話，建議讓專案接管防火牆，80/443 就只會對客戶端網段開放：
+安裝時選了 n、之後想改由專案接管（開「港澳台連接」也需要接管）：
 
 ```bash
-sudo FIREWALL_MODE=managed simcard-dns --set-client-cidrs "<目前的客戶端網段>"
+sudo simcard-dns --set-firewall managed
 ```
 
 > ⚠️ 80/443 絕不能對全網開放，否則任何人都能把這台伺服器當開放代理用。
@@ -153,9 +153,10 @@ sudo simcard-dns --del-client-asn AS9231                               # 移除�
 sudo simcard-dns --set-client-cidrs "203.0.113.0/24 198.51.100.0/22"   # 直接指定網段（取代整份清單）
 ```
 
-**港澳台連接**（SSH、853、8111 只接受香港、澳門、台灣與白名單網段）
+**港澳台連接**（SSH、853、8111 只接受香港、澳門、台灣與白名單網段；需要專案接管防火牆）
 
 ```bash
+sudo simcard-dns --set-firewall managed   # 還沒接管防火牆時先執行這行
 sudo simcard-dns --geo-allow status       # 看狀態
 sudo simcard-dns --geo-allow on           # 開啟
 sudo simcard-dns --geo-allow off          # 關閉
