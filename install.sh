@@ -5,7 +5,7 @@
 # suppressed file-wide here. Behaviour is unchanged by the modular split.
 # shellcheck disable=SC2034,SC2153
 set -euo pipefail
-REPO_URL="https://github.com/Xiuyixx/5GPN-X.git"
+REPO_URL="https://github.com/Bibibiibi/simcard-dns.git"
 if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     SCRIPT_PATH="${SCRIPT_DIR}/$(basename "${BASH_SOURCE[0]}")"
@@ -46,7 +46,7 @@ bootstrap_err() { printf 'Error: %s\n' "$*" >&2; }
 
 # Raw entrypoint bootstrap runs in a subshell: traps and globals cannot leak.
 bootstrap_install() (
-REPO="Xiuyixx/5GPN-X"
+REPO="Bibibiibi/simcard-dns"
 # Keep source checkout separate from the live runtime/data tree. The
 # installer deploys into /opt/5gpn and never removes an existing runtime tree.
 SOURCE_DIR="${PGW_SRC_DIR:-/opt/5gpn-source}"

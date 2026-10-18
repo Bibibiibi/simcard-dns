@@ -15,7 +15,7 @@
 ## 2. 首次安装
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Xiuyixx/5GPN-X/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/Bibibiibi/simcard-dns/main/install.sh | sudo bash
 ```
 
 按提示输入域名；证书邮箱可通过 `EMAIL` 设置。已有证书会复用，没有证书时才申请 Let's Encrypt 证书。
@@ -23,7 +23,7 @@ curl -fsSL https://raw.githubusercontent.com/Xiuyixx/5GPN-X/main/install.sh | su
 无交互环境请预先提供至少 `DOMAIN`（可选 `EMAIL`）：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Xiuyixx/5GPN-X/main/install.sh | \
+curl -fsSL https://raw.githubusercontent.com/Bibibiibi/simcard-dns/main/install.sh | \
   sudo env DOMAIN=dns.example.com EMAIL=admin@example.com bash
 ```
 

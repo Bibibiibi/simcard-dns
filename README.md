@@ -1,4 +1,4 @@
-# 5GPN-X
+# simcard-dns
 
 服务器端透明代理网关：手机卡通过公网连接服务器，只需设置私人 DNS（DoT），即可按域名分流并经服务器透明代理访问网络，手机上无需安装代理软件。只有客户端网段（运营商公网出口网段，默认 CTMO / 中国电信澳门 AS136167）内的来源会获得代理；其他来源可使用 DNS，但只做普通解析（见 [手机卡接入](docs/GUIDE.md#手机卡接入)）。
 
@@ -11,7 +11,7 @@
 项目版本：**1.1.3**（见 [CHANGELOG](CHANGELOG.md)）。首次安装和升级使用同一个入口：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Xiuyixx/5GPN-X/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/Bibibiibi/simcard-dns/main/install.sh | sudo bash
 ```
 
 - **安装前**：把域名指向服务器公网 IP，并放行所需端口：公网 TCP `853`；证书验证用 TCP `80`；客户端网段（运营商出口网段）使用 TCP `80/443` 和 UDP `443`；iOS 描述文件使用 TCP `8111`。
