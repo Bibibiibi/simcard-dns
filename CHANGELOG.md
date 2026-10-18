@@ -22,6 +22,22 @@
 - 修复用已安装的 `5gpn-ctl --setup-tgbot` 安装 Bot 时，因把模块复制到自身（`are the same file`）而中断安装的问题。
 - 修复全新 Debian 12 上 sniproxy `autogen.sh` 因缺少 gettext 的 `AC_LIB_*` m4 宏而编译失败：apt 依赖增加 `gettext`，dnf/yum 依赖增加 `gettext-devel`。
 - 修复 sniproxy 被编译成不带 libudns 的版本、启动即报 `Only socket address backends are permitted` 的问题：上游 `--enable-dns` 实际会关闭 DNS，改为使用默认值，并在 configure 后校验 `HAVE_LIBUDNS`。
+## 1.1.3 — 2026-10-13
+
+- 修复历史安装留下的非 Git `/opt/5gpn-source` 源码目录无法升级的问题：先准备并校验干净源码，再将旧源码目录保留到带时间戳的备份目录，不删除运行配置。
+- 增加非 Git 源码目录升级回归测试。
+
+## 1.1.2 — 2026-10-13
+
+- Telegram 主菜单固定显示两行：`5GPN-X` 和 `选择一个操作：`，不再在标题中显示版本号；按钮和操作逻辑不变。
+- 更新菜单文案回归测试；版本号仅在项目版本文件和文档中维护，不随版本更新添加回菜单。
+
+## 1.1.1 — 2026-10-12
+
+- 出口检查区分 TCP 未连接、DNS 解析失败、超时和 UDP 未测试；TCP 成功不再暗示代理认证成功，节点地址作为参数传递而非拼接 shell。
+- 出口 IP 查询总预算缩短至 6 秒，校验 IPv4 输出；后台查询期间允许返回菜单，保持修改操作繁忙保护。
+- 控制台和普通异步回复不再在持有 generation 锁时执行 Telegram 网络请求，避免慢请求阻塞导航。
+- 同步项目版本、README 和 Bot 主菜单；补充出口探测与慢请求回归测试。
 
 ## 1.1.0 — 2026-10-10
 

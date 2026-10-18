@@ -232,43 +232,81 @@ PY
 
 exit_reachable() {
     local host="$1" port="$2"
-    [[ -z "$host" || -z "$port" ]] && return 0
-    timeout 4 bash -c "exec 3<>/dev/tcp/${host}/${port}" 2>/dev/null
+    [[ -n "$host" && -n "$port" ]] || return 2
+    # Pass data as argv, never interpolate an imported hostname into bash -c.
+    # A resolver error is not proof that the upstream node is down.
+    timeout 5 python3 - "$host" "$port" <<'PYPROBE'
+import socket, sys, time
+try:
+    addresses = socket.getaddrinfo(sys.argv[1], int(sys.argv[2]), type=socket.SOCK_STREAM)
+except socket.gaierror:
+    raise SystemExit(2)
+except (ValueError, OverflowError):
+    raise SystemExit(3)
+deadline = time.monotonic() + 4
+for family, kind, proto, _, address in addresses:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        break
+    try:
+        with socket.socket(family, kind, proto) as sock:
+            sock.settimeout(min(1.5, remaining))
+            sock.connect(address)
+        raise SystemExit(0)
+    except OSError:
+        pass
+raise SystemExit(1)
+PYPROBE
+}
+
+exit_probe_state() {
+    local name="$1" host="$2" port="$3" rc
+    case "$(exit_type "$name")" in
+        hysteria|hysteria2|tuic|wireguard) echo UDP_UNTESTED; return ;;
+    esac
+    [[ -n "$host" && -n "$port" ]] || { echo UNKNOWN; return; }
+    if exit_reachable "$host" "$port"; then
+        echo UP
+    else
+        rc=$?
+        case "$rc" in
+            2) echo DNS_ERROR ;;
+            124) echo TIMEOUT ;;
+            1) echo DOWN ;;
+            *) echo UNKNOWN ;;
+        esac
+    fi
 }
 
 preflight_exit() {
-    local name="$1" t hp host port tgt
+    local name="$1" t hp host port state tgt
     t="$(exit_type "$name")"
-    if [[ "$t" =~ ^(shadowsocks|vmess|trojan|vless|hysteria|hysteria2|tuic|anytls|shadowtls|socks|http)$ ]]; then
-        hp="$(exit_server "$name")"; host="${hp%% *}"; port="${hp##* }"
-        if ! exit_reachable "$host" "$port"; then
-            warn "Exit '$name' upstream ${host}:${port} is UNREACHABLE — traffic via it will fail."
-        fi
-    elif [[ "$t" == "router" ]]; then
+    # This is only an endpoint check, not an authenticated tunnel test.
+    if [[ "$t" == router ]]; then
         while IFS= read -r tgt; do
-            case "$tgt" in direct|block|"") continue ;; esac
-            hp="$(exit_server "$tgt")"; host="${hp%% *}"; port="${hp##* }"
-            if ! exit_reachable "$host" "$port"; then
-                warn "Smart target '$tgt' (${host}:${port}) is UNREACHABLE — rules using it will blackhole."
-            fi
+            case "$tgt" in direct|block|smart|"$name"|"") continue ;; esac
+            [[ "$(exit_type "$tgt")" == router ]] && continue
+            preflight_exit "$tgt"
         done < <(awk -F= 'NF==2{print $2}' "${POLICY_MAP}" 2>/dev/null | sort -u)
+        return 0
     fi
+    hp="$(exit_server "$name")"; host="${hp%% *}"; port="${hp##* }"
+    state="$(exit_probe_state "$name" "$host" "$port")"
+    case "$state" in
+        DNS_ERROR) warn "Exit '$name': server DNS resolution failed; check host DNS before judging the node." ;;
+        DOWN|TIMEOUT) warn "Exit '$name': endpoint TCP probe failed ($state); this does not verify the proxy tunnel." ;;
+    esac
+    return 0
 }
 
 check_exits() {
     local n hp host port state
     while IFS= read -r n; do
         [[ -z "$n" ]] && continue
-        [[ "$(exit_type "$n")" == "router" ]] && continue   # router targets listed individually
+        [[ "$(exit_type "$n")" == "router" ]] && continue
         hp="$(exit_server "$n")"; host="${hp%% *}"; port="${hp##* }"
-        if [[ -z "$host" ]]; then
-            state="n/a"
-        elif exit_reachable "$host" "$port"; then
-            state="UP"
-        else
-            state="DOWN"
-        fi
-        printf '  %-12s %-22s %s\n' "$n" "${host:+${host}:${port}}" "$state"
+        state="$(exit_probe_state "$n" "$host" "$port")"
+        printf '  %s  %s  %s\n' "$n" "${host:+${host}:${port}}" "$state"
     done < <(list_exit_names)
 }
 
