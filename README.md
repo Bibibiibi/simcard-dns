@@ -112,7 +112,7 @@ sudo FIREWALL_MODE=managed simcard-dns --set-client-cidrs "<目前的客戶端�
 | Cloudflare 隨機網域 | `--setup-cloudflare`（權杖以隱藏方式輸入）、`--reset-domain` |
 | DNS 上游 | `--set-dns "<國際 DNS>" "<國內 DNS>"` |
 | Telegram Bot | `--setup-tgbot` |
-| 解除安裝 | `--uninstall` |
+| 解除安裝 | `--uninstall`（完整清除程式、服務、設定、狀態、日誌、原始碼與系統調校；憑證、備份、Go 會逐項詢問） |
 
 完整說明請看文件：
 

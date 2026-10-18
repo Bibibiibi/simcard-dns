@@ -70,6 +70,8 @@ sudo /opt/simcard-dns/bin/simcard-dns --check-exits
 sudo /opt/simcard-dns/bin/simcard-dns --uninstall
 ```
 
+`--uninstall` 会完整清除：服务与单元（含 drop-in 目录）、`/opt/simcard-dns`、`/etc/simcard-dns`、`/etc/mosdns`、状态（`/var/lib/simcard-dns*`）、安装日志、源码目录、证书钩子、系统调校（sysctl、limits、journald、模块加载、THP 单元），并还原防火墙。以下三项会逐项询问，默认保留：本项目签发的 Let's Encrypt 证书、`/var/backups/simcard-dns` 备份（含配置与令牌）、`/usr/local/go`。swap 文件始终保留，运行中的内核参数重启后恢复默认。
+
 需要变更 DNS、出口、规则或 Telegram Bot 时，请看 [日常管理与配置参考](GUIDE.md)。不要直接编辑生成配置；优先使用 `simcard-dns`。
 
 ## 5. 失败排查
