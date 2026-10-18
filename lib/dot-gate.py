@@ -19,6 +19,7 @@ import ipaddress
 import logging
 import os
 import struct
+import time
 
 LISTEN_PORT = int(os.environ.get("DOT_GATE_PORT", "853"))
 BACKEND_HOST = os.environ.get("DOT_GATE_BACKEND_HOST", "127.0.0.1")
@@ -31,11 +32,14 @@ HELLO_TIMEOUT = float(os.environ.get("DOT_GATE_HELLO_TIMEOUT", "5"))
 CHECK_INTERVAL = float(os.environ.get("DOT_GATE_CHECK_INTERVAL", "2"))
 MAX_CONN = int(os.environ.get("DOT_GATE_MAXCONN", "4096"))
 MAX_RECORD = 16384 + 2048  # TLS plaintext record limit plus slack
+REJECT_LOG_INTERVAL = float(os.environ.get("DOT_GATE_REJECT_LOG_INTERVAL", "60"))
+REJECT_LOG_MAX = 4096
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s dot-gate %(message)s")
 LOG = logging.getLogger("dot-gate")
 ACTIVE = {}  # writer -> SNI the connection was admitted with
 _CACHE = {}
+_REJECTS = {}  # (peer, sni) -> [last logged time, rejections suppressed since]
 
 
 def _cached(path, parse):
@@ -80,6 +84,34 @@ def is_client(address):
     if ip.version == 6 and ip.ipv4_mapped:
         ip = ip.ipv4_mapped
     return any(ip.version == net.version and ip in net for net in client_networks())
+
+
+def log_reject(peer, sni, now=None):
+    """Log a rejected name at most once per interval per (peer, name).
+
+    A device still configured with a reset name retries several times a
+    second; logging every attempt would flood the journal. Returns True when
+    a line was written.
+    """
+    now = time.monotonic() if now is None else now
+    key = (peer, sni)
+    entry = _REJECTS.get(key)
+    if entry and now - entry[0] < REJECT_LOG_INTERVAL:
+        entry[1] += 1
+        return False
+    suppressed = entry[1] if entry else 0
+    if len(_REJECTS) >= REJECT_LOG_MAX:
+        cutoff = now - REJECT_LOG_INTERVAL
+        for stale in [k for k, v in _REJECTS.items() if v[0] < cutoff]:
+            del _REJECTS[stale]
+        if len(_REJECTS) >= REJECT_LOG_MAX:
+            _REJECTS.clear()
+    _REJECTS[key] = [now, 0]
+    if suppressed:
+        LOG.info("rejected sni=%s from %s (+%d more since last report)", sni, peer, suppressed)
+    else:
+        LOG.info("rejected sni=%s from %s", sni, peer)
+    return True
 
 
 def parse_sni(record):
@@ -154,7 +186,7 @@ async def handle(reader, writer):
         domain = current_domain()
         if not sni or not domain or sni != domain:
             if sni:
-                LOG.info("rejected sni=%s from %s", sni, peer[0])
+                log_reject(peer[0], sni)
             return
         source = CLIENT_SRC if is_client(peer[0]) else OTHER_SRC
         try:

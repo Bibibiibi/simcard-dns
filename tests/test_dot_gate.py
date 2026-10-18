@@ -44,6 +44,35 @@ class ParseTest(unittest.TestCase):
         self.assertIsNone(gate.parse_sni(b"\x16\x03\x01\x00"))
 
 
+class RejectLogTest(unittest.TestCase):
+    def setUp(self):
+        gate._REJECTS.clear()
+
+    def test_rejections_are_logged_once_per_interval_with_suppressed_count(self):
+        with self.assertLogs("dot-gate", level="INFO") as logs:
+            self.assertTrue(gate.log_reject("198.51.100.7", "old.dns.example.com", now=100.0))
+            for i in range(5):
+                self.assertFalse(gate.log_reject("198.51.100.7", "old.dns.example.com", now=100.0 + i))
+            # A different name or peer is reported on its own.
+            self.assertTrue(gate.log_reject("198.51.100.7", "older.dns.example.com", now=101.0))
+            self.assertTrue(gate.log_reject("203.0.113.9", "old.dns.example.com", now=101.0))
+            # After the interval the next attempt is logged with the skipped count.
+            self.assertTrue(gate.log_reject("198.51.100.7", "old.dns.example.com", now=100.0 + gate.REJECT_LOG_INTERVAL))
+        self.assertEqual(len(logs.output), 4)
+        self.assertIn("(+5 more since last report)", logs.output[-1])
+
+    def test_tracking_table_stays_bounded(self):
+        saved = gate.REJECT_LOG_MAX
+        gate.REJECT_LOG_MAX = 10
+        try:
+            with self.assertLogs("dot-gate", level="INFO"):
+                for i in range(50):
+                    gate.log_reject("198.51.100.%d" % i, "x.example", now=float(i))
+            self.assertLessEqual(len(gate._REJECTS), 10)
+        finally:
+            gate.REJECT_LOG_MAX = saved
+
+
 class GateTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tmp = tempfile.TemporaryDirectory()
