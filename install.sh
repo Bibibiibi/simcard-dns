@@ -222,8 +222,9 @@ if [[ $# -gt 0 ]]; then
     exec bash ./install.sh "$@"
 fi
 mkdir -p "$RUNTIME_DIR"
-umask 077
-printf 'mode=%s\ntarget=%s\nstarted=%s\n' "$mode" "$COMMIT" "$(date -u +%FT%TZ)" > "$ATTEMPT"
+# Only the attempt marker is private; the installer itself must not inherit
+# umask 077, or runtime dirs/binaries become unreadable for the service users.
+( umask 077; printf 'mode=%s\ntarget=%s\nstarted=%s\n' "$mode" "$COMMIT" "$(date -u +%FT%TZ)" > "$ATTEMPT" )
 trap 'rc=$?; if (( rc != 0 )); then err "安装/升级未完成；保留旧版本标记。诊断: $ATTEMPT 、${RUNTIME_DIR}/.upgrade-attempt 或 /var/log/simcard-dns-install.log；检查备份后重试。"; fi' EXIT
 info "Launching ${mode} at ${COMMIT}..."
 if [[ "$mode" == upgrade ]]; then
@@ -478,6 +479,9 @@ install_stage_finalize() {
 
 main_install() {
     check_root
+    # Services run as mosdns / pxout: files and dirs must be world-readable
+    # unless a step restricts them explicitly (tokens, keys).
+    umask 022
     init_install_log
     INSTALL_STATE="$(mktemp /tmp/simcard-dns-install-state.XXXXXX)"
     trap 'rm -f "${INSTALL_STATE:-}"' EXIT
@@ -746,6 +750,7 @@ main_upgrade() {
     tar -C / -czf "$backup/config-code.tar.gz" "${paths[@]}"
     INSTALL_LOG="$backup/upgrade.log"
     init_install_log
+    umask 022  # the backup above is private; deployed files are not
     # shellcheck disable=SC2031 # Read the child process environment, not bootstrap locals.
     printf 'target=%s\nbackup=%s\n' "${PGW_COMMIT:-unknown}" "$backup" > "${BASE_DIR}/.upgrade-attempt"
     info "升级备份与日志: $backup（含敏感配置，仅 root 可读）"

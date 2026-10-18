@@ -44,6 +44,7 @@ esac
         git.chmod(0o755)
         (self.base / "fixture.sh").write_text('''#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "$TEST_BASE/install.calls"
+umask > "$TEST_BASE/umask"
 if [[ -t 0 ]]; then echo tty >> "$TEST_BASE/input"; else cat > "$TEST_BASE/input"; fi
 exit "${FAIL_INSTALL:-0}"
 ''')
@@ -59,6 +60,22 @@ exit "${FAIL_INSTALL:-0}"
     def legacy(self):
         (self.runtime / "etc").mkdir(parents=True)
         (self.runtime / "etc/.domain").write_text("saved.example.org\n")
+
+    def test_installer_does_not_inherit_private_umask(self):
+        # The attempt marker is private, but the installer must not run under
+        # umask 077: service users (mosdns, pxout) could not read what it deploys.
+        old = os.umask(0o022)
+        try:
+            result = self.run_launcher()
+        finally:
+            os.umask(old)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.base / "umask").read_text().strip(), "0022")
+        body = (ROOT / "install.sh").read_text()
+        main_install = body.split("main_install() {", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("umask 022", main_install)
+        main_upgrade = body.split("main_upgrade() {", 1)[1].split("\n}\n", 1)[0]
+        self.assertLess(main_upgrade.index("umask 022"), main_upgrade.index("run_install_step"))
 
     def test_fresh_and_current(self):
         result = self.run_launcher()
