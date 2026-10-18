@@ -23,7 +23,8 @@ do_uninstall() {
     shopt -u nullglob
     systemctl stop mosdns dot-gate dnsdist sniproxy wa-shim quic-proxy china-dns-race-proxy simcard-dns-ios-profile.socket simcard-dns-ios-profile simcard-dns-exit simcard-dns-geo-update.timer simcard-dns-tgbot 2>/dev/null || true
     systemctl disable mosdns dot-gate dnsdist sniproxy wa-shim quic-proxy china-dns-race-proxy simcard-dns-ios-profile.socket simcard-dns-ios-profile simcard-dns-exit simcard-dns-geo-update.timer simcard-dns-tgbot 2>/dev/null || true
-    rm -f /etc/systemd/system/{mosdns,dot-gate,sniproxy,wa-shim,quic-proxy,china-dns-race-proxy,simcard-dns-ios-profile,update-mosdns-rules,simcard-dns-exit,simcard-dns-geo-update,simcard-dns-tgbot}.*
+    # rm -r: the glob also matches drop-in dirs such as mosdns.service.d.
+    rm -rf /etc/systemd/system/{mosdns,dot-gate,sniproxy,wa-shim,quic-proxy,china-dns-race-proxy,simcard-dns-ios-profile,update-mosdns-rules,simcard-dns-exit,simcard-dns-geo-update,simcard-dns-tgbot}.*
     rm -f /etc/systemd/system/simcard-dns-ios-profile@.service \
         /etc/systemd/system/simcard-dns-mihomo@.service \
         /etc/systemd/system/simcard-dns-singbox@.service
