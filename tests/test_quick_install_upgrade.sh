@@ -23,7 +23,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 [[ "$quick" != *'--status)"'* ]] || fail "quick installer must not own status branch"
 [[ "$install" == *'--upgrade)'* && "$install" == *'main_upgrade'* ]] || fail "explicit upgrade entrypoint missing"
 [[ "$install" == *'现有安装不完整；升级未修改配置'* ]] || fail "partial install must refuse upgrade"
-[[ "$install" == *'/var/backups/5gpn/upgrade.'* ]] || fail "upgrade backup missing"
+[[ "$install" == *'/var/backups/simcard-dns/upgrade.'* ]] || fail "upgrade backup missing"
 [[ "$install" == *'tgbot.env'* && "$install" == *'upgrade_code'* ]] || fail "bot state preservation path missing"
 [[ "$install" == *'install_ctl_entrypoint || return $?'* ]] || fail "fresh install must refresh self-contained CLI"
 

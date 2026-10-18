@@ -16,7 +16,8 @@ class BotSetupTests(unittest.TestCase):
         env_file.write_text(content)
         # Redirect only the unit destination; never write /etc/systemd or call systemctl.
         source = (ROOT / 'lib/services.sh').read_text().replace(
-            '/etc/systemd/system/5gpn-tgbot.service', tmp + '/bot.service')
+            '/etc/systemd/system/simcard-dns-tgbot.service', tmp + '/bot.service').replace(
+            '/usr/local/bin/simcard-dns}', tmp + '/shim}')
         script = source + f'''
 BASE_DIR='{tmp}'; CONF_DIR='{conf}'; LIB_DIR='{ROOT}/lib'; SCRIPT_PATH='{ROOT}/install.sh'
 info() {{ :; }}; ok() {{ echo SUCCESS; }}; warn() {{ :; }}; err() {{ echo "$*" >&2; }}
@@ -39,8 +40,8 @@ setup_tgbot
             self.assertIn('TG_STATE_FILE=/custom/state', path.read_text())
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
             calls = (Path(tmp) / 'calls').read_text()
-            self.assertIn('restart 5gpn-tgbot.service', calls)
-            self.assertIn('is-active --quiet 5gpn-tgbot.service', calls)
+            self.assertIn('restart simcard-dns-tgbot.service', calls)
+            self.assertIn('is-active --quiet simcard-dns-tgbot.service', calls)
             self.assertEqual((Path(tmp) / 'bin/tgbot.py').read_bytes(), (ROOT / 'lib/tgbot.py').read_bytes())
 
     def test_environment_is_not_executed(self):
@@ -82,12 +83,12 @@ setup_tgbot
             (mock / 'git').chmod(0o755)
             env = dict(os.environ, PATH=str(mock) + ':' + os.environ['PATH'], PGW_SRC_DIR=str(source), PGW_COMMIT=commit)
             launcher = base / 'bootstrap.sh'
-            launcher.write_text("set -euo pipefail\n" + (ROOT / 'install.sh').read_text().split('bootstrap_install() (\n', 1)[1].split('\n)\n', 1)[0].replace('RUNTIME_DIR="/opt/5gpn"', f'RUNTIME_DIR="{runtime}"'))
+            launcher.write_text("set -euo pipefail\n" + (ROOT / 'install.sh').read_text().split('bootstrap_install() (\n', 1)[1].split('\n)\n', 1)[0].replace('RUNTIME_DIR="/opt/simcard-dns"', f'RUNTIME_DIR="{runtime}"'))
             result = subprocess.run(['bash', str(launcher), '--setup-tgbot'], env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual((base / 'args').read_text().strip(), '--setup-tgbot')
             self.assertEqual((runtime / 'keep').read_text(), 'data')
-            self.assertIn('PGW_SRC_DIR:-/opt/5gpn-source', (ROOT / 'install.sh').read_text())
+            self.assertIn('PGW_SRC_DIR:-/opt/simcard-dns-source', (ROOT / 'install.sh').read_text())
 
 
 if __name__ == '__main__':

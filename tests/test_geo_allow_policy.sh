@@ -29,7 +29,7 @@ CLIENT_CIDRS_FILE="${tmp}/.client_cidrs"
 DEFAULT_CLIENT_CIDRS="203.0.113.0/24"
 echo "198.51.100.0/24" > "${CLIENT_CIDRS_FILE}"
 unset CLIENT_CIDRS SSH_CONNECTION
-BASE_DIR=/opt/5gpn
+BASE_DIR=/opt/simcard-dns
 
 # Unit sections never touch the host firewall or systemd.
 nft_log="${tmp}/nft.log"
@@ -151,7 +151,7 @@ table inet filter {
     }
 }
 
-include "/etc/5gpn/pgw-exit.nft"
+include "/etc/simcard-dns/pgw-exit.nft"
 EOF
 }
 managed_conf
@@ -186,10 +186,10 @@ SSH_CONNECTION="1.36.9.9 5000 192.0.2.10 22"
 [[ "$(geo_conf_get GEO_ALLOW)" == on && "$(geo_conf_get GEO_PORTS)" == 22,853,8111 ]] || fail "on must persist state and ports"
 grep -q 'counter drop' "$PGW_GEO_NFT" || fail "on must render the active gate"
 grep -q 'jump geo_gate' "$PGW_NFT_CONF" || fail "on must hook the managed ruleset"
-grep -q 'ExecStart=/opt/5gpn/bin/5gpn-ctl --geo-allow update' "${PGW_GEO_UNIT_DIR}/5gpn-geo-update.service" \
+grep -q 'ExecStart=/opt/simcard-dns/bin/simcard-dns --geo-allow update' "${PGW_GEO_UNIT_DIR}/simcard-dns-geo-update.service" \
     || fail "on must install the update service"
-grep -q 'OnCalendar=' "${PGW_GEO_UNIT_DIR}/5gpn-geo-update.timer" || fail "on must install a periodic timer"
-grep -q 'enable --now 5gpn-geo-update.timer' "${tmp}/systemctl.log" || fail "on must enable the timer"
+grep -q 'OnCalendar=' "${PGW_GEO_UNIT_DIR}/simcard-dns-geo-update.timer" || fail "on must install a periodic timer"
+grep -q 'enable --now simcard-dns-geo-update.timer' "${tmp}/systemctl.log" || fail "on must enable the timer"
 status="$(geo_allow_status)"
 for want in $'state\ton' $'v4\t5' $'ports\t22,853,8111'; do
     grep -qx "$want" <<< "$status" || fail "status must be machine-readable (got: $status)"
@@ -219,7 +219,7 @@ nft() { echo "nft $*" >> "$nft_log"; return 0; }
 (geo_allow_off) || fail "off must succeed"
 [[ "$(geo_conf_get GEO_ALLOW)" == off ]] || fail "off must persist"
 grep -q 'counter drop' "$PGW_GEO_NFT" && fail "off must empty the gate"
-[[ -e "${PGW_GEO_UNIT_DIR}/5gpn-geo-update.timer" ]] && fail "off must remove the timer"
+[[ -e "${PGW_GEO_UNIT_DIR}/simcard-dns-geo-update.timer" ]] && fail "off must remove the timer"
 grep -q 'jump geo_gate' "$PGW_NFT_CONF" || fail "off keeps the (now empty) hook so on/off never reloads the whole ruleset"
 (geo_allow_off) || fail "off twice must be a no-op"
 
@@ -242,9 +242,9 @@ grep -qF 'include "__GEO_NFT__"' "${root}/lib/host-setup.sh" || fail "fresh mana
 grep -A8 'ct state established,related accept' "${root}/lib/host-setup.sh" | grep -q '^        jump geo_gate$' \
     || fail "fresh managed rulesets must jump to the gate"
 grep -qF -- '--geo-allow)' "${root}/install.sh" || fail "--geo-allow must be dispatched"
-grep -qF '/etc/5gpn/pgw-exit.nft "$GEO_NFT"' "${root}/install.sh" || fail "--upgrade must snapshot geo-allow.nft"
+grep -qF '/etc/simcard-dns/pgw-exit.nft "$GEO_NFT"' "${root}/install.sh" || fail "--upgrade must snapshot geo-allow.nft"
 grep -qF 'refresh_geo_allow_clients' "${root}/lib/dns.sh" || fail "client list changes must refresh the allowlist"
-grep -qF ',5gpn-geo-update,' "${root}/lib/uninstall.sh" || fail "uninstall must remove the timer units"
+grep -qF ',simcard-dns-geo-update,' "${root}/lib/uninstall.sh" || fail "uninstall must remove the timer units"
 
 # --- real nftables in throwaway network namespaces (Linux, root) ---------------------------------
 if [[ "$(uname -s)" == Linux && "$(id -u)" == 0 ]] && command -v ip >/dev/null && type -P nft >/dev/null; then
@@ -265,7 +265,7 @@ if [[ "$(uname -s)" == Linux && "$(id -u)" == 0 ]] && command -v ip >/dev/null &
     nft_real() { ip netns exec "$ns_srv" nft "$@"; }
     geo_tool render "$GEO_CACHE" "$(current_client_cidrs)" 22,853 on > "$PGW_GEO_NFT"
     managed_conf
-    sed -i "s#include \"/etc/5gpn/pgw-exit.nft\"##" "$PGW_NFT_CONF"
+    sed -i "s#include \"/etc/simcard-dns/pgw-exit.nft\"##" "$PGW_NFT_CONF"
     sed -i "s#^flush ruleset#flush ruleset\ninclude \"${PGW_GEO_NFT}\"#; s#ct state established,related accept#&\n        jump geo_gate#" "$PGW_NFT_CONF"
     nft_real -c -f "$PGW_GEO_NFT" || fail "rendered geo-allow.nft must validate standalone"
     nft_real -f "$PGW_NFT_CONF" || fail "managed ruleset with the gate must load"

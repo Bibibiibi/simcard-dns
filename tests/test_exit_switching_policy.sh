@@ -40,8 +40,8 @@ done
 [[ "${install_body}" == *'ip route replace default dev'* ]] || fail "install.sh must route marked traffic into the exit interface"
 
 # --- boot persistence --------------------------------------------------------
-[[ "${install_body}" == *'5gpn-exit.service'* ]] || fail "install.sh must install the boot-time exit selector service"
-[[ "${install_body}" == *'5gpn-apply-exit.sh'* ]] || fail "install.sh must install the apply-exit helper"
+[[ "${install_body}" == *'simcard-dns-exit.service'* ]] || fail "install.sh must install the boot-time exit selector service"
+[[ "${install_body}" == *'simcard-dns-apply-exit.sh'* ]] || fail "install.sh must install the apply-exit helper"
 
 # --- WireGuard configs must never hijack the global default route -----------
 [[ "${install_body}" == *'Table = off'* ]] || fail "install.sh must force 'Table = off' on imported WireGuard exit configs"
@@ -49,10 +49,10 @@ done
 # --- remote exit server setup is operator-owned ----------------------------
 [[ ! -f "${root}/lib/exit-server-setup.sh" ]] || fail "project must not bundle remote exit-server setup"
 
-# --- 5gpn-apply-exit.sh is the mihomo unit's own ExecStartPost --------------
+# --- simcard-dns-apply-exit.sh is the mihomo unit's own ExecStartPost --------------
 # A blocking "systemctl start" of the unit that is starting waits on itself
 # until systemd's start timeout (seen as the bot hanging on rule updates).
-apply_script="$(sed -n "/cat >> \/usr\/local\/bin\/5gpn-apply-exit.sh <<'EOF'/,/^EOF\$/p" "${root}/lib/exits.sh")"
+apply_script="$(sed -n "/cat >> \/usr\/local\/bin\/simcard-dns-apply-exit.sh <<'EOF'/,/^EOF\$/p" "${root}/lib/exits.sh")"
 [[ "$apply_script" == *'systemctl start --no-block "$(mihomo_unit "${current}")"'* ]] \
     || fail "apply-exit must start the mihomo unit without blocking (ExecStartPost deadlock)"
 [[ "$apply_script" != *'systemctl start "$(mihomo_unit'* ]] || fail "apply-exit must never block on its own unit"

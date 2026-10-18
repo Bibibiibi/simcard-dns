@@ -23,7 +23,7 @@ class LauncherTests(unittest.TestCase):
         self.bin.mkdir()
         self.launcher = self.base / "quick.sh"
         text = "set -euo pipefail\n" + (ROOT / "install.sh").read_text().split("bootstrap_install() (\n", 1)[1].split("\n)\n", 1)[0]
-        text = text.replace('RUNTIME_DIR="/opt/5gpn"', f'RUNTIME_DIR="{self.runtime}"')
+        text = text.replace('RUNTIME_DIR="/opt/simcard-dns"', f'RUNTIME_DIR="{self.runtime}"')
         # Root check only is disabled for non-root CI; actual operations mocked.
         text = text.replace('if [[ $EUID -ne 0 ]]; then', 'if false; then')
         self.launcher.write_text(text)
@@ -101,7 +101,7 @@ exit "${FAIL_INSTALL:-0}"
 
     def test_status_offline_preserves_stdin(self):
         (self.runtime / "bin").mkdir(parents=True)
-        (self.runtime / "bin/5gpn-ctl").write_text((self.base / "fixture.sh").read_text())
+        (self.runtime / "bin/simcard-dns").write_text((self.base / "fixture.sh").read_text())
         result = self.run_launcher("--status", FAIL_REF="1")
         self.assertEqual(result.returncode, 0)
         self.assertFalse((self.base / "git.calls").exists())

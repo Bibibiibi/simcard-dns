@@ -99,7 +99,7 @@ table inet filter {
         ip saddr { 74.119.64.0/21, 103.143.92.0/23 } udp dport 443 accept
     }
 }
-include "/etc/5gpn/pgw-exit.nft"
+include "/etc/simcard-dns/pgw-exit.nft"
 NFT
 PATH="${tmp}/bin:$PATH" PGW_NFT_CONF="${tmp}/nftables.conf" refresh_managed_client_rules "63.140.1.0/24 103.143.92.0/23" \
     || fail "managed client rules must be refreshable"

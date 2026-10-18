@@ -2,10 +2,10 @@
 # Let's Encrypt renewal hook - copy certs to mosdns-readable location and reload
 set -e
 
-DOMAIN=$(cat /opt/5gpn/etc/.domain 2>/dev/null || cat /etc/mosdns/.domain 2>/dev/null || true)
+DOMAIN=$(cat /opt/simcard-dns/etc/.domain 2>/dev/null || cat /etc/mosdns/.domain 2>/dev/null || true)
 # A reset (random) DoT name is served by a wildcard lineage whose directory is
 # named after the certificate, not the domain.
-LINEAGE=$(cat /opt/5gpn/etc/.cert_lineage 2>/dev/null || true)
+LINEAGE=$(cat /opt/simcard-dns/etc/.cert_lineage 2>/dev/null || true)
 if [[ -n "$LINEAGE" && -d "/etc/letsencrypt/live/${LINEAGE}" ]]; then
     LIVE_DIR="/etc/letsencrypt/live/${LINEAGE}"
 elif [[ -n "$DOMAIN" && -d "/etc/letsencrypt/live/${DOMAIN}" ]]; then

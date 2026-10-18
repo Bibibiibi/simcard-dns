@@ -10,11 +10,11 @@ if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     SCRIPT_PATH="${SCRIPT_DIR}/$(basename "${BASH_SOURCE[0]}")"
 else
-    SCRIPT_DIR="/nonexistent/5gpn-raw-entrypoint"
+    SCRIPT_DIR="/nonexistent/simcard-dns-raw-entrypoint"
     SCRIPT_PATH="${SCRIPT_DIR}/install.sh"
 fi
 LIB_DIR="${SCRIPT_DIR}/lib"
-BASE_DIR="/opt/5gpn"
+BASE_DIR="/opt/simcard-dns"
 CONF_DIR="${BASE_DIR}/etc"
 SRC_DIR="${BASE_DIR}/src"
 WWW_DIR="${BASE_DIR}/www"
@@ -23,17 +23,17 @@ EXIT_USER="pxout"
 EXIT_MARK="0x1"
 EXIT_TABLE="100"
 WG_DIR="/etc/wireguard"
-EXITS_DIR="/etc/5gpn/exits"
-RULES_FILE="/etc/5gpn/rules.conf"
-POLICY_MAP="/etc/5gpn/policy-map.conf"
-KEEP_FILE="/etc/5gpn/keep-categories"
-DIRECT_FILE="/etc/5gpn/direct-categories"
-RULES_DEFAULT="/etc/5gpn/rules-default.conf"
-RULESET_CACHE="/etc/5gpn/rulesets"
-MIHOMO_BIN="/opt/5gpn/bin/mihomo"
-MIHOMO_CFG_GEN="/opt/5gpn/bin/mihomo-exit-config.py"
-MIHOMO_ROUTER_GEN="/opt/5gpn/bin/mihomo-router-config.py"
-RULES_IMPORT="/opt/5gpn/bin/rules-import.py"
+EXITS_DIR="/etc/simcard-dns/exits"
+RULES_FILE="/etc/simcard-dns/rules.conf"
+POLICY_MAP="/etc/simcard-dns/policy-map.conf"
+KEEP_FILE="/etc/simcard-dns/keep-categories"
+DIRECT_FILE="/etc/simcard-dns/direct-categories"
+RULES_DEFAULT="/etc/simcard-dns/rules-default.conf"
+RULESET_CACHE="/etc/simcard-dns/rulesets"
+MIHOMO_BIN="/opt/simcard-dns/bin/mihomo"
+MIHOMO_CFG_GEN="/opt/simcard-dns/bin/mihomo-exit-config.py"
+MIHOMO_ROUTER_GEN="/opt/simcard-dns/bin/mihomo-router-config.py"
+RULES_IMPORT="/opt/simcard-dns/bin/rules-import.py"
 MIHOMO_VERSION_DEFAULT="1.19.28"
 MOSDNS_VERSION_DEFAULT="5.3.4"
 DEFAULT_REMOTE_DNS=("1.1.1.1" "8.8.8.8" "9.9.9.9")
@@ -48,10 +48,12 @@ bootstrap_err() { printf 'Error: %s\n' "$*" >&2; }
 bootstrap_install() (
 REPO="Bibibiibi/simcard-dns"
 # Keep source checkout separate from the live runtime/data tree. The
-# installer deploys into /opt/5gpn and never removes an existing runtime tree.
-SOURCE_DIR="${PGW_SRC_DIR:-/opt/5gpn-source}"
+# installer deploys into /opt/simcard-dns and never removes an existing runtime tree.
+SOURCE_DIR="${PGW_SRC_DIR:-/opt/simcard-dns-source}"
 COMMIT="${PGW_COMMIT:-}"
-RUNTIME_DIR="/opt/5gpn"
+RUNTIME_DIR="/opt/simcard-dns"
+# Runtime tree of hosts installed under the old 5GPN-X name.
+LEGACY_RUNTIME_DIR="$(dirname "$RUNTIME_DIR")/5gpn"
 MARKER="${RUNTIME_DIR}/.installed-commit"
 ATTEMPT="${RUNTIME_DIR}/.install-attempt"
 
@@ -73,8 +75,8 @@ pkg_install() {
 }
 
 # Management commands are not install/upgrade requests, even when offline.
-if [[ $# -gt 0 && -f "${RUNTIME_DIR}/bin/5gpn-ctl" ]]; then
-    exec bash "${RUNTIME_DIR}/bin/5gpn-ctl" "$@"
+if [[ $# -gt 0 && -f "${RUNTIME_DIR}/bin/simcard-dns" ]]; then
+    exec bash "${RUNTIME_DIR}/bin/simcard-dns" "$@"
 fi
 # Never check out source inside the live data tree (including symlink aliases).
 source_real="$(realpath -m "$SOURCE_DIR")"
@@ -106,9 +108,11 @@ mode=install
 if [[ $# -eq 0 ]]; then
     # A checkout alone is NOT an installation. Recognize deployed runtime
     # state, including historical non-Git installs without a version marker.
-    if [[ -f "$MARKER" || -f "$ATTEMPT" || -f "${RUNTIME_DIR}/bin/5gpn-ctl" || -s "${RUNTIME_DIR}/etc/.domain" ]]; then
+    # Hosts still on the old 5GPN-X layout upgrade too (main_upgrade migrates them).
+    if [[ -f "$MARKER" || -f "$ATTEMPT" || -f "${RUNTIME_DIR}/bin/simcard-dns" || -s "${RUNTIME_DIR}/etc/.domain" ||
+          -f "${LEGACY_RUNTIME_DIR}/bin/5gpn-ctl" || -s "${LEGACY_RUNTIME_DIR}/etc/.domain" ]]; then
         mode=upgrade
-        installed="$(cat "$MARKER" 2>/dev/null || true)"
+        installed="$(cat "$MARKER" "${LEGACY_RUNTIME_DIR}/.installed-commit" 2>/dev/null | head -n 1 || true)"
         if [[ "$installed" == "$COMMIT" && ! -e "$ATTEMPT" ]]; then
             ok "已是当前版本 ${COMMIT}，无需升级。"
             exit 0
@@ -200,7 +204,7 @@ elif [[ -e "${SOURCE_DIR}" ]]; then
     # Historical installers could leave a plain source tree without .git.
     # Treat it like an untrusted/legacy checkout: prepare and verify the new
     # tree first, then archive the old tree instead of deleting or overwriting
-    # it. Runtime configuration remains under /opt/5gpn and is unaffected.
+    # it. Runtime configuration remains under /opt/simcard-dns and is unaffected.
     info "Existing source is not a Git checkout; preparing a clean checkout and archiving the old tree"
     stage="$(stage_source)" || exit 1
     replace_source_atomically "$stage" || exit 1
@@ -209,7 +213,7 @@ else
     mv -T -- "$stage" "$SOURCE_DIR"
 fi
 [[ "$(git -C "${SOURCE_DIR}" rev-parse HEAD)" == "${COMMIT,,}" ]] || { err "Commit verification failed"; exit 1; }
-ok "Source ready at ${SOURCE_DIR}; existing /opt/5gpn runtime data was not removed"
+ok "Source ready at ${SOURCE_DIR}; existing /opt/simcard-dns runtime data was not removed"
 
 cd "${SOURCE_DIR}"
 # Arguments retain stdin verbatim and never create installation markers.
@@ -219,7 +223,7 @@ fi
 mkdir -p "$RUNTIME_DIR"
 umask 077
 printf 'mode=%s\ntarget=%s\nstarted=%s\n' "$mode" "$COMMIT" "$(date -u +%FT%TZ)" > "$ATTEMPT"
-trap 'rc=$?; if (( rc != 0 )); then err "安装/升级未完成；保留旧版本标记。诊断: $ATTEMPT 、${RUNTIME_DIR}/.upgrade-attempt 或 /var/log/5gpn-install.log；检查备份后重试。"; fi' EXIT
+trap 'rc=$?; if (( rc != 0 )); then err "安装/升级未完成；保留旧版本标记。诊断: $ATTEMPT 、${RUNTIME_DIR}/.upgrade-attempt 或 /var/log/simcard-dns-install.log；检查备份后重试。"; fi' EXIT
 info "Launching ${mode} at ${COMMIT}..."
 if [[ "$mode" == upgrade ]]; then
     bash ./install.sh --upgrade < /dev/null
@@ -241,7 +245,7 @@ bootstrap_from_repo_if_needed() {
     # Standalone/stdin execution stages the exact verified repository commit.
     local required=(
         lib/common.sh lib/dns.sh lib/cert.sh lib/services.sh
-        lib/exits.sh lib/rules.sh lib/uninstall.sh
+        lib/exits.sh lib/rules.sh lib/uninstall.sh lib/migrate.sh
         lib/renew-hook.sh lib/sniproxy.conf lib/quic-proxy.go
         lib/mosdns.yaml.template lib/update-rules.sh lib/ios-http.py lib/tgbot.py
         lib/wa-shim.py lib/dot-gate.py lib/rules-import.py lib/mihomo-exit-config.py
@@ -252,7 +256,7 @@ bootstrap_from_repo_if_needed() {
         [[ -f "${SCRIPT_DIR}/${f}" ]] || { missing=1; break; }
     done
     [[ $missing -eq 0 ]] && return 0
-    if [[ "$(basename -- "$SCRIPT_PATH")" == 5gpn-ctl ]]; then
+    if [[ "$(basename -- "$SCRIPT_PATH")" == simcard-dns ]]; then
         bootstrap_err "Missing ${f}; restore the self-contained CLI from a full checkout"
         return 1
     fi
@@ -272,7 +276,7 @@ NC='\033[0m' # No Color
 # this orchestrator readable. Order matters only in that common.sh defines
 # shared helpers used by others at call time.
 # ---------------------------------------------------------------------------
-for _mod in common dns cert services exits rules uninstall; do
+for _mod in common dns cert services exits rules uninstall migrate; do
     _modf="${LIB_DIR}/${_mod}.sh"
     if [[ -f "${_modf}" ]]; then
         # shellcheck source=/dev/null
@@ -391,7 +395,7 @@ Environment variables (for non-interactive use):
   TG_ADMIN_IDS   Comma-separated Telegram numeric IDs allowed to operate the bot
   MIHOMO_VERSION Override the locked mihomo version (default: ${MIHOMO_VERSION_DEFAULT})
   MOSDNS_VERSION Override the locked mosdns version (default: ${MOSDNS_VERSION_DEFAULT})
-  TG_STATE_FILE   tgbot getUpdates offset state file (default: /var/lib/5gpn/tgbot-state.json)
+  TG_STATE_FILE   tgbot getUpdates offset state file (default: /var/lib/simcard-dns/tgbot-state.json)
   FIREWALL_MODE  preserve (default) | auto | managed.
                  preserve keeps the existing host firewall untouched and only
                  manages the project's own egress-marking rules; auto adds the
@@ -461,9 +465,9 @@ install_stage_finalize() {
 main_install() {
     check_root
     init_install_log
-    INSTALL_STATE="$(mktemp /tmp/5gpn-install-state.XXXXXX)"
+    INSTALL_STATE="$(mktemp /tmp/simcard-dns-install-state.XXXXXX)"
     trap 'rm -f "${INSTALL_STATE:-}"' EXIT
-    printf '\n5GPN-X 安装\n\n'
+    printf '\nsimcard-dns 安装\n\n'
 
     run_install_step "检查运行环境" install_stage_environment || { warn "安装阶段失败：检查运行环境。已完成阶段未自动回滚；请检查安装日志和现有配置备份后重试。"; return 1; }
     # shellcheck disable=SC1090 # State file is generated by the stage above.
@@ -502,7 +506,7 @@ main_install() {
     cat <<EOF
   DNS:  ${DOMAIN}
   iOS:  http://${DOMAIN}:${IOS_PROFILE_PORT}/ios-dot.mobileconfig
-  管理: ${BASE_DIR}/bin/5gpn-ctl --status
+  管理: ${BASE_DIR}/bin/simcard-dns --status
 EOF
     echo ""
 }
@@ -529,12 +533,13 @@ upgrade_code() (
         /etc/mosdns/gfwlist.txt /etc/mosdns/chinalist.txt
         /etc/mosdns/override-direct.txt /etc/mosdns/override-proxy.txt /etc/mosdns/override-block.txt
         /etc/mosdns/rule-domains.txt /etc/mosdns/rule-block.txt /etc/mosdns/rule-domain-cache
-        /var/lib/5gpn-quic/remote-dns /usr/local/bin/update-mosdns-rules.sh /usr/local/bin/mosdns
-        /etc/systemd/system/quic-proxy.service /etc/systemd/system/5gpn-mihomo@.service
+        /var/lib/simcard-dns-quic/remote-dns /usr/local/bin/update-mosdns-rules.sh /usr/local/bin/mosdns
+        /usr/local/bin/simcard-dns
+        /etc/systemd/system/quic-proxy.service /etc/systemd/system/simcard-dns-mihomo@.service
         /etc/systemd/system/dot-gate.service
-        /etc/5gpn/pgw-exit.nft "$GEO_NFT"
+        /etc/simcard-dns/pgw-exit.nft "$GEO_NFT"
         /etc/letsencrypt/renewal-hooks/deploy/99-reload-mosdns.sh)
-    local active=() units=(mosdns dot-gate sniproxy quic-proxy wa-shim 5gpn-tgbot 5gpn-mihomo@smart)
+    local active=() units=(mosdns dot-gate sniproxy quic-proxy wa-shim simcard-dns-tgbot simcard-dns-mihomo@smart)
     for unit in "${units[@]}"; do
         if systemctl is-active --quiet "$unit.service"; then active+=("$unit"); fi
     done
@@ -647,7 +652,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/opt/5gpn/bin/quic-proxy -l 0.0.0.0:443 -dns-file /var/lib/5gpn-quic/remote-dns
+ExecStart=/opt/simcard-dns/bin/quic-proxy -l 0.0.0.0:443 -dns-file /var/lib/simcard-dns-quic/remote-dns
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5
@@ -681,6 +686,8 @@ EOF
 
 main_upgrade() {
     check_root
+    # Hosts installed under the old 5GPN-X names move to the new layout first.
+    migrate_legacy_layout || { err "迁移旧版 5GPN-X 路径失败，已还原；升级未继续。"; return 1; }
     # Refuse partial/unrecognized installations rather than run a fresh wizard.
     if [[ ! -s "${CONF_DIR}/.domain" || ! -s /etc/mosdns/config.yaml || ! -x "${BASE_DIR}/bin/quic-proxy" ]]; then
         err "现有安装不完整；升级未修改配置。请检查安装日志并修复安装后重试。"
@@ -688,13 +695,13 @@ main_upgrade() {
     fi
     local backup
     umask 077
-    mkdir -p /var/backups/5gpn
-    backup="$(mktemp -d /var/backups/5gpn/upgrade.XXXXXX)"
+    mkdir -p /var/backups/simcard-dns
+    backup="$(mktemp -d /var/backups/simcard-dns/upgrade.XXXXXX)"
     # Archive code and all managed config; do not read/execute tgbot.env or
     # touch its custom TG_STATE_FILE. State outside these paths is unchanged.
     local paths=() path
-    for path in "$BASE_DIR/bin" "$CONF_DIR" /etc/5gpn /etc/wireguard /etc/mosdns \
-        /etc/sniproxy.conf /etc/letsencrypt /var/lib/5gpn /etc/systemd/system \
+    for path in "$BASE_DIR/bin" "$CONF_DIR" /etc/simcard-dns /etc/wireguard /etc/mosdns \
+        /etc/sniproxy.conf /etc/letsencrypt /var/lib/simcard-dns /etc/systemd/system \
         /usr/local/bin/update-mosdns-rules.sh /usr/local/bin/mosdns; do
         [[ ! -e "$path" ]] || paths+=("${path#/}")
     done

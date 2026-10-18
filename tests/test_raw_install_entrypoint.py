@@ -22,7 +22,7 @@ class RawEntrypointTests(unittest.TestCase):
         # Disable only the root gate in this isolated source copy (CI is nonroot).
         self.script = (ROOT / 'install.sh').read_text().replace(
             'if [[ $EUID -ne 0 ]]; then', 'if false; then').replace(
-            'BASE_DIR="/opt/5gpn"', f'BASE_DIR="{self.runtime}"').replace('RUNTIME_DIR="/opt/5gpn"', f'RUNTIME_DIR="{self.runtime}"')
+            'BASE_DIR="/opt/simcard-dns"', f'BASE_DIR="{self.runtime}"').replace('RUNTIME_DIR="/opt/simcard-dns"', f'RUNTIME_DIR="{self.runtime}"')
         # A closed PATH makes missing-git tests independent of host packages.
         for name in ('bash', 'awk', 'mktemp', 'rm', 'chmod', 'cat', 'dirname', 'basename', 'realpath', 'stat', 'mkdir', 'cp', 'mv', 'date'):
             (self.bin / name).symlink_to(shutil.which(name))
@@ -48,7 +48,7 @@ class RawEntrypointTests(unittest.TestCase):
             data = self.script
         result = subprocess.run(cmd, input=data, text=True, capture_output=True,
                                 cwd=self.base, env=dict(self.env, **env), timeout=10)
-        self.assertEqual(list(self.base.glob('5gpn-quick.*')), [], result.stderr)
+        self.assertEqual(list(self.base.glob('simcard-dns-quick.*')), [], result.stderr)
         return result
 
     def log(self):
@@ -100,7 +100,7 @@ class RawEntrypointTests(unittest.TestCase):
         self.assertEqual(self.log(), '')
 
     def test_offline_management_uses_existing_cli(self):
-        ctl = self.runtime / 'bin/5gpn-ctl'
+        ctl = self.runtime / 'bin/simcard-dns'
         ctl.parent.mkdir(parents=True)
         ctl.write_text('printf "management:<%s>\\n" "$@"\n')
         result = self.run_raw('--status', FAIL_REF='1')

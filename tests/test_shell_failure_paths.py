@@ -12,7 +12,7 @@ def functions(path):
     if path.endswith('update-rules.sh'):
         # Keep only the function library; the updater's executable transaction
         # begins at the routing-lock setup in current revisions.
-        marker = 'lock_file="${PGW_ROUTING_LOCK_FILE:-/run/lock/5gpn-routing.lock}"'
+        marker = 'lock_file="${PGW_ROUTING_LOCK_FILE:-/run/lock/simcard-dns-routing.lock}"'
         if marker in text:
             text = text[:text.index(marker)]
         else:
@@ -75,7 +75,7 @@ update_domain_cache test URL RAW FILE parse_test
 
     def test_broken_installed_cli_fails_without_network(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = pathlib.Path(tmp) / '5gpn-ctl'
+            path = pathlib.Path(tmp) / 'simcard-dns'
             path.write_text((ROOT / 'install.sh').read_text())
             result = subprocess.run(['bash', str(path)], capture_output=True, text=True,
                                     env={'PATH': '/usr/bin:/bin', 'G5PNX_BOOTSTRAPPED': '1'})

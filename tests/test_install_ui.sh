@@ -29,14 +29,14 @@ done
 [[ "$install_body" != *"高性能反代系统一键部署"* ]] || fail "legacy install banner must stay removed"
 [[ "$install_body" != *"         部署完成！"* ]] || fail "legacy completion banner must stay removed"
 # shellcheck disable=SC2016 # Match the literal variable reference in install.sh.
-[[ "$install_body" == *'${BASE_DIR}/bin/5gpn-ctl --status'* ]] || fail "completion summary must use the stable management path"
+[[ "$install_body" == *'${BASE_DIR}/bin/simcard-dns --status'* ]] || fail "completion summary must use the stable management path"
 # The standalone bootstrap has subshell-scoped loggers; runtime uses common.sh.
 runtime_body="$(sed '1,/^bootstrap_from_repo_if_needed "\$@"$/d' "${root}/install.sh")"
 [[ "$runtime_body" != *"info()"* ]] || fail "install.sh must reuse the common logger"
 # shellcheck disable=SC2016 # Match the literal variable reference in install.sh.
 [[ "$install_body" != *'cat "${WWW_DIR}/ios-dot.qr.txt"'* ]] || fail "completion summary must not print a full terminal QR code"
 [[ "$common_body" == *"run_install_step()"* ]] || fail "common logger must provide the install runner"
-[[ "$common_body" == *'/var/log/5gpn-install.log'* ]] || fail "installer must keep a persistent detail log"
+[[ "$common_body" == *'/var/log/simcard-dns-install.log'* ]] || fail "installer must keep a persistent detail log"
 [[ "$common_body" != *"collect_port53_confirmation()"* ]] || fail "installer must not prompt for port 53"
 [[ "$install_body" != *'run_install_step "释放 DNS 端口"'* ]] || fail "port 53 must not be an install stage"
 [[ "$cert_body" != *'info "=================================================="'* ]] || fail "verbose DNS separator must stay removed"

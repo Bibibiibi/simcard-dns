@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 5GPN-X module: rules
+# simcard-dns module: rules
 # Extracted verbatim from install.sh (original formatting preserved).
 # Sourced by install.sh; not meant to run standalone.
 # shellcheck shell=bash
@@ -7,7 +7,7 @@
 # Serialize mutations across CLI invocations and the DNS timer. The inherited
 # descriptor remains held until the management process exits.
 routing_lock() {
-    local lock_file="${PGW_ROUTING_LOCK_FILE:-/run/lock/5gpn-routing.lock}"
+    local lock_file="${PGW_ROUTING_LOCK_FILE:-/run/lock/simcard-dns-routing.lock}"
     if [[ "${PGW_ROUTING_LOCK_FD:-}" != 9 || "$(readlink /proc/$BASHPID/fd/9 2>/dev/null || true)" != "$lock_file" ]]; then
         mkdir -p "$(dirname "$lock_file")"
         exec 9>"$lock_file"
@@ -31,7 +31,7 @@ regen_smart() {
     [[ -f "${MIHOMO_ROUTER_GEN}" ]] || { err "Router generator missing: ${MIHOMO_ROUTER_GEN}"; exit 1; }
     ensure_proxy_user
     mkdir -p "${EXITS_DIR}" "${RULESET_CACHE}"; chmod 700 "${EXITS_DIR}"
-    [[ -x /usr/local/bin/5gpn-apply-exit.sh ]] || setup_exit_switching >/dev/null
+    [[ -x /usr/local/bin/simcard-dns-apply-exit.sh ]] || setup_exit_switching >/dev/null
     ensure_mihomo || exit 1
     install_mihomo_unit
     info "Building smart mihomo config and rule providers..."
@@ -65,14 +65,14 @@ regen_smart() {
     fi
     install -m 600 "${yaml}.tmp" "${yaml}"; rm -f "${yaml}.tmp"
     echo router > "$type_file"
-    if [[ "$cur" == "smart" ]] && systemctl is-active --quiet "5gpn-mihomo@smart.service"; then
+    if [[ "$cur" == "smart" ]] && systemctl is-active --quiet "simcard-dns-mihomo@smart.service"; then
         local apply_ok=1
-        systemctl restart "5gpn-mihomo@smart.service" >/dev/null 2>&1 || apply_ok=0
-        [[ $apply_ok -eq 1 ]] && systemctl is-active --quiet "5gpn-mihomo@smart.service" || apply_ok=0
+        systemctl restart "simcard-dns-mihomo@smart.service" >/dev/null 2>&1 || apply_ok=0
+        [[ $apply_ok -eq 1 ]] && systemctl is-active --quiet "simcard-dns-mihomo@smart.service" || apply_ok=0
         [[ $apply_ok -eq 1 ]] && exit_wait_device smart || apply_ok=0
         [[ $apply_ok -eq 1 ]] && apply_current_exit >/dev/null 2>&1 || apply_ok=0
         if [[ $apply_ok -ne 1 ]]; then
-            systemctl stop "5gpn-mihomo@smart.service" >/dev/null 2>&1 || true
+            systemctl stop "simcard-dns-mihomo@smart.service" >/dev/null 2>&1 || true
             if [[ $had_yaml -eq 1 ]]; then
                 install -m 600 "${backup_dir}/smart.yaml" "$yaml"
             else
@@ -85,8 +85,8 @@ regen_smart() {
             fi
             local rollback_ok=1
             if [[ $had_yaml -eq 1 ]]; then
-                systemctl restart "5gpn-mihomo@smart.service" >/dev/null 2>&1 || rollback_ok=0
-                [[ $rollback_ok -eq 1 ]] && systemctl is-active --quiet "5gpn-mihomo@smart.service" || rollback_ok=0
+                systemctl restart "simcard-dns-mihomo@smart.service" >/dev/null 2>&1 || rollback_ok=0
+                [[ $rollback_ok -eq 1 ]] && systemctl is-active --quiet "simcard-dns-mihomo@smart.service" || rollback_ok=0
                 [[ $rollback_ok -eq 1 ]] && exit_wait_device smart || rollback_ok=0
                 [[ $rollback_ok -eq 1 ]] && apply_current_exit >/dev/null 2>&1 || rollback_ok=0
             fi
@@ -356,7 +356,7 @@ proxy_domain() (
         *) exit_exists "$target" || { err "Unknown target '$target'"; exit 1; }; action=proxy ;;
     esac
     local dns_dir="${PGW_MOSDNS_DIR:-/etc/mosdns}" updater="${PGW_RULES_UPDATER:-/usr/local/bin/update-mosdns-rules.sh}"
-    local lock_file="${PGW_ROUTING_LOCK_FILE:-/run/lock/5gpn-routing.lock}"
+    local lock_file="${PGW_ROUTING_LOCK_FILE:-/run/lock/simcard-dns-routing.lock}"
     if [[ "${PGW_ROUTING_LOCK_FD:-}" != 9 || "$(readlink /proc/$BASHPID/fd/9 2>/dev/null || true)" != "$lock_file" ]]; then
         mkdir -p "$(dirname "$lock_file")"
         exec 9>"$lock_file"; flock -x 9

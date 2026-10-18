@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 5GPN-X module: exits
+# simcard-dns module: exits
 # Extracted verbatim from install.sh (original formatting preserved).
 # Sourced by install.sh; not meant to run standalone.
 # shellcheck shell=bash
@@ -18,7 +18,7 @@ exit_iface() {
     fi
 }
 
-exit_mihomo_unit() { systemd-escape --template=5gpn-mihomo@.service "$1"; }
+exit_mihomo_unit() { systemd-escape --template=simcard-dns-mihomo@.service "$1"; }
 
 exit_type_file()    { echo "${EXITS_DIR}/${1}.type"; }
 
@@ -126,7 +126,7 @@ ensure_mihomo() {
 }
 
 install_mihomo_unit() {
-    cat > /etc/systemd/system/5gpn-mihomo@.service <<EOF
+    cat > /etc/systemd/system/simcard-dns-mihomo@.service <<EOF
 [Unit]
 Description=Proxy Gateway mihomo exit (%i)
 After=network-online.target
@@ -136,7 +136,7 @@ Wants=network-online.target
 Type=simple
 ExecStart=${MIHOMO_BIN} -d ${CONF_DIR}/mihomo/%I -f ${EXITS_DIR}/%I.yaml
 # Recreating the TUN drops the table-100 route; re-apply it after (re)start.
-ExecStartPost=-/usr/local/bin/5gpn-apply-exit.sh
+ExecStartPost=-/usr/local/bin/simcard-dns-apply-exit.sh
 Restart=on-failure
 RestartSec=5
 User=root
@@ -149,8 +149,8 @@ Environment=GOMEMLIMIT=128MiB
 WantedBy=multi-user.target
 EOF
     mkdir -p "${CONF_DIR}/mihomo"
-    systemctl stop '5gpn-singbox@*.service' 2>/dev/null || true
-    rm -f /etc/systemd/system/5gpn-singbox@.service
+    systemctl stop 'simcard-dns-singbox@*.service' 2>/dev/null || true
+    rm -f /etc/systemd/system/simcard-dns-singbox@.service
     rm -f "${BASE_DIR}/bin/sing-box" "${BASE_DIR}/bin/singbox-exit-config.py" \
         "${BASE_DIR}/bin/singbox-router-config.py"
     systemctl daemon-reload
@@ -174,7 +174,7 @@ migrate_singbox_exits() {
     done
     shopt -u nullglob
     [[ $old -eq 1 ]] || return 0
-    systemctl stop '5gpn-singbox@*.service' 2>/dev/null || true
+    systemctl stop 'simcard-dns-singbox@*.service' 2>/dev/null || true
     if [[ $current_removed -eq 1 ]]; then
         echo local > "${CONF_DIR}/current-exit"
         ip route flush table "${EXIT_TABLE}" 2>/dev/null || true
@@ -320,13 +320,13 @@ exit_wait_device() {
 }
 
 apply_current_exit() {
-    /usr/local/bin/5gpn-apply-exit.sh
+    /usr/local/bin/simcard-dns-apply-exit.sh
 }
 
 install_apply_exit_helper() {
-    cat > /usr/local/bin/5gpn-apply-exit.sh <<EOF
+    cat > /usr/local/bin/simcard-dns-apply-exit.sh <<EOF
 #!/bin/bash
-# Re-apply the currently selected 5gpn egress exit.
+# Re-apply the currently selected simcard-dns egress exit.
 set -e
 MARK="${EXIT_MARK}"
 TABLE="${EXIT_TABLE}"
@@ -334,12 +334,12 @@ STATE="${CONF_DIR}/current-exit"
 EXITS_DIR="${EXITS_DIR}"
 WG_DIR="${WG_DIR}"
 EOF
-    cat >> /usr/local/bin/5gpn-apply-exit.sh <<'EOF'
+    cat >> /usr/local/bin/simcard-dns-apply-exit.sh <<'EOF'
 
 # Ensure the egress-marking nftables table exists; it may have been wiped by a
 # host firewall reload (flush ruleset) since the last apply.
-if command -v nft >/dev/null 2>&1 && [[ -f /etc/5gpn/pgw-exit.nft ]]; then
-    nft -f /etc/5gpn/pgw-exit.nft 2>/dev/null || true
+if command -v nft >/dev/null 2>&1 && [[ -f /etc/simcard-dns/pgw-exit.nft ]]; then
+    nft -f /etc/simcard-dns/pgw-exit.nft 2>/dev/null || true
 fi
 
 # Marked traffic consults the dedicated table; an empty table falls through to
@@ -354,7 +354,7 @@ exit_iface() {
         printf 'pgw-%s\n' "$(printf '%s' "$name" | sha256sum | cut -c1-11)"
     fi
 }
-mihomo_unit() { systemd-escape --template=5gpn-mihomo@.service "$1"; }
+mihomo_unit() { systemd-escape --template=simcard-dns-mihomo@.service "$1"; }
 
 current="local"
 [[ -f "${STATE}" ]] && current="$(cat "${STATE}" 2>/dev/null || echo local)"
@@ -387,7 +387,7 @@ ip link show up "${iface}" >/dev/null 2>&1 || { echo "[!] exit '${current}' (${e
 ip route replace default dev "${iface}" table "${TABLE}"
 echo "[OK] egress exit active: ${current} (${etype}, dev ${iface})"
 EOF
-    chmod +x /usr/local/bin/5gpn-apply-exit.sh
+    chmod +x /usr/local/bin/simcard-dns-apply-exit.sh
 }
 
 setup_exit_switching() {
@@ -414,7 +414,7 @@ setup_exit_switching() {
     install_mihomo_unit
     migrate_singbox_exits
     install_apply_exit_helper
-    cat > /etc/systemd/system/5gpn-exit.service <<'EOF'
+    cat > /etc/systemd/system/simcard-dns-exit.service <<'EOF'
 [Unit]
 Description=Proxy Gateway egress exit selector
 After=network-online.target nftables.service
@@ -423,14 +423,14 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/local/bin/5gpn-apply-exit.sh
+ExecStart=/usr/local/bin/simcard-dns-apply-exit.sh
 
 [Install]
 WantedBy=multi-user.target
 EOF
     systemctl daemon-reload
-    systemctl enable 5gpn-exit.service 2>/dev/null || true
-    /usr/local/bin/5gpn-apply-exit.sh >/dev/null 2>&1 || true
+    systemctl enable simcard-dns-exit.service 2>/dev/null || true
+    /usr/local/bin/simcard-dns-apply-exit.sh >/dev/null 2>&1 || true
     ok "Egress exit routing ready (default: local / direct)"
 }
 
@@ -748,7 +748,7 @@ set_exit() {
     local name="${1:-}"
     [[ -z "$name" ]] && { err "Usage: $0 --set-exit <name|local>"; exit 1; }
     ensure_proxy_user
-    [[ -x /usr/local/bin/5gpn-apply-exit.sh ]] || setup_exit_switching >/dev/null
+    [[ -x /usr/local/bin/simcard-dns-apply-exit.sh ]] || setup_exit_switching >/dev/null
     ip rule add fwmark "${EXIT_MARK}" table "${EXIT_TABLE}" 2>/dev/null || true
     local prev="local"
     [[ -f "${CONF_DIR}/current-exit" ]] && prev="$(cat "${CONF_DIR}/current-exit" 2>/dev/null || echo local)"

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-open WhatsApp no-SNI shim for the 5GPN-X TCP/443 listener.
+"""Fail-open WhatsApp no-SNI shim for the simcard-dns TCP/443 listener.
 
 Derived from Loading886/iOS-5GPN-WhatsApp-Patch (MIT). Only ED/WA Noise
 prefixes from configured client CIDRs go to g.whatsapp.net; everything else is

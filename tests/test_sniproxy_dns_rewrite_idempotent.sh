@@ -43,9 +43,9 @@ sed_redirect() {
   sed \
     -e "s#/etc/sniproxy.conf#${tmp}/sniproxy.conf#g" \
     -e "s#/etc/mosdns#${tmp}/etc/mosdns#g" \
-    -e "s#/opt/5gpn#${tmp}/opt#g" \
+    -e "s#/opt/simcard-dns#${tmp}/opt#g" \
     -e "s#/usr/local/bin/update-mosdns-rules.sh#${tmp}/update-mosdns-rules.sh#g" \
-    -e "s#/var/lib/5gpn-quic#${tmp}/var/lib/5gpn-quic#g" \
+    -e "s#/var/lib/simcard-dns-quic#${tmp}/var/lib/simcard-dns-quic#g" \
     "$1"
 }
 for _m in "${root}"/lib/*; do

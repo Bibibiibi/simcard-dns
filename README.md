@@ -35,7 +35,7 @@ simcard-dns 是一套裝在 Linux 伺服器上的閘道。它同時是一台加�
 | 客戶端 | 依 ASN 加入或移除電信業者網段，也可手動指定 CIDR |
 | 入口保護 | DoT 入口只放行目前網域的 SNI；接上 Cloudflare 後可一鍵換成新的隨機網域，舊網域立即失效 |
 | 港澳台連接 | 可選：SSH、853、8111 只接受香港、澳門、台灣與客戶端網段連入，名單每天自動更新 |
-| 管理 | 命令列 `5gpn-ctl` 與 Telegram Bot（狀態、出口、分流、白名單、連入 IP、網域） |
+| 管理 | 命令列 `simcard-dns` 與 Telegram Bot（狀態、出口、分流、白名單、連入 IP、網域） |
 | 資源 | 1 GB 以下記憶體自動切換低資源模式 |
 
 ## 快速開始
@@ -63,10 +63,10 @@ curl -fsSL https://raw.githubusercontent.com/Bibibiibi/simcard-dns/main/install.
 預設的客戶端網段是中國電信澳門（CTMO，AS136167）。換成你的電信業者：
 
 ```bash
-sudo /opt/5gpn/bin/5gpn-ctl --lookup-client-asn AS9231   # 先看業者名稱與網段數
-sudo /opt/5gpn/bin/5gpn-ctl --add-client-asn AS9231
+sudo simcard-dns --lookup-client-asn AS9231   # 先看業者名稱與網段數
+sudo simcard-dns --add-client-asn AS9231
 # 或直接指定網段（會取代整份清單）
-sudo /opt/5gpn/bin/5gpn-ctl --set-client-cidrs "203.0.113.0/24 198.51.100.0/22"
+sudo simcard-dns --set-client-cidrs "203.0.113.0/24 198.51.100.0/22"
 ```
 
 ### 4. 防火牆
@@ -83,7 +83,7 @@ sudo /opt/5gpn/bin/5gpn-ctl --set-client-cidrs "203.0.113.0/24 198.51.100.0/22"
 主機上沒有其他服務要顧的話，建議讓專案接管防火牆，80/443 就只會對客戶端網段開放：
 
 ```bash
-sudo FIREWALL_MODE=managed /opt/5gpn/bin/5gpn-ctl --set-client-cidrs "<目前的客戶端網段>"
+sudo FIREWALL_MODE=managed simcard-dns --set-client-cidrs "<目前的客戶端網段>"
 ```
 
 > ⚠️ 80/443 絕不能對全網開放，否則任何人都能把這台伺服器當開放代理用。
@@ -91,14 +91,14 @@ sudo FIREWALL_MODE=managed /opt/5gpn/bin/5gpn-ctl --set-client-cidrs "<目前的
 ### 5. 手機設定
 
 - **Android**：設定 → 網路和網際網路 → 私人 DNS → 填入安裝時的網域。
-- **iOS / iPadOS**：掃安裝完成時顯示的 QR Code，或用 Safari 開 `http://<你的網域>:8111/ios-dot.mobileconfig` 安裝描述檔（只在行動網路啟用 DoT）。要重新產生描述檔和 QR Code，執行 `sudo /opt/5gpn/bin/5gpn-ctl -ios`（原始碼目錄可用 `./install.sh -ios`）。
+- **iOS / iPadOS**：掃安裝完成時顯示的 QR Code，或用 Safari 開 `http://<你的網域>:8111/ios-dot.mobileconfig` 安裝描述檔（只在行動網路啟用 DoT）。要重新產生描述檔和 QR Code，執行 `sudo simcard-dns -ios`（原始碼目錄可用 `./install.sh -ios`）。從舊版升級後描述檔識別碼已改變，請先刪除舊的描述檔再重新安裝。
 - **電腦**：在系統的 DoT 設定，或用 Stubby、cloudflared 指向 `<你的網域>:853`。
 
 改完規則後如果手機沒有馬上生效，先切一下飛航模式或強制關閉 App：手機和 App 會快取 DNS、保留舊連線。
 
 ## 常用指令
 
-所有指令都是 `sudo /opt/5gpn/bin/5gpn-ctl <選項>`。內部路徑和指令名稱沿用 `5gpn`，方便既有主機直接升級。
+所有指令都是 `sudo simcard-dns <選項>`（程式本體在 `/opt/simcard-dns/bin/simcard-dns`，設定在 `/etc/simcard-dns`）。從舊版 5GPN-X 升級的主機，第一次升級時會自動把 `/opt/5gpn`、`/etc/5gpn` 和 `5gpn-*` 服務搬到新名稱，舊版內容備份在 `/var/backups/simcard-dns/migrate.*`。
 
 | 用途 | 選項 |
 | --- | --- |

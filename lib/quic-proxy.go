@@ -37,7 +37,7 @@ const (
 var (
 	listenAddr  = flag.String("l", ":443", "Listen address (UDP)")
 	idleTimeout = flag.Duration("idle-timeout", 300*time.Second, "UDP session idle timeout")
-	dnsFile     = flag.String("dns-file", "/var/lib/5gpn-quic/remote-dns", "Overseas DNS configuration (plain IP or udp://IP:port only)")
+	dnsFile     = flag.String("dns-file", "/var/lib/simcard-dns-quic/remote-dns", "Overseas DNS configuration (plain IP or udp://IP:port only)")
 	debug       = flag.Bool("debug", false, "Enable debug logging")
 )
 

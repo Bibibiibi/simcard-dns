@@ -157,7 +157,7 @@ class IosQrFlowTest(unittest.TestCase):
         self.assertEqual(len(self.methods("sendMessage")), 0)
 
     def test_menu_has_no_version_label(self):
-        self.assertEqual(self.bot.main_menu_text(), "5GPN-X\n选择一个操作：")
+        self.assertEqual(self.bot.main_menu_text(), "simcard-dns\n选择一个操作：")
 
     def test_missing_source_on_back_still_sends_menu(self):
         self.existing.clear()

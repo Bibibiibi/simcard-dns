@@ -11,7 +11,7 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-UNITS = ('mosdns', 'sniproxy', 'quic-proxy', 'wa-shim', '5gpn-tgbot', '5gpn-mihomo@smart')
+UNITS = ('mosdns', 'sniproxy', 'quic-proxy', 'wa-shim', 'simcard-dns-tgbot', 'simcard-dns-mihomo@smart')
 
 
 class UpgradeTransactionTests(unittest.TestCase):
@@ -43,22 +43,22 @@ class UpgradeTransactionTests(unittest.TestCase):
             self.put('/etc/mosdns/' + f, 'old-' + f + '\n')
         self.put('/etc/mosdns/domain-overrides.conf', 'example.org=proxy\n')
         self.put('/etc/mosdns/.public_ip', '192.0.2.1\n')
-        self.put('/etc/5gpn/rules.conf', 'DOMAIN-SUFFIX,example.org,direct\n')
-        self.put('/etc/5gpn/rules-default.conf', 'old-default\n')
+        self.put('/etc/simcard-dns/rules.conf', 'DOMAIN-SUFFIX,example.org,direct\n')
+        self.put('/etc/simcard-dns/rules-default.conf', 'old-default\n')
         # A complete existing installation maps all shipped default categories.
         categories = {line.rsplit(',', 1)[-1].strip() for line in
                       (ROOT / 'lib/rules-default.conf').read_text().splitlines()
                       if line and not line.startswith('#')}
-        self.put('/etc/5gpn/policy-map.conf',
+        self.put('/etc/simcard-dns/policy-map.conf',
                  ''.join(f'{category}=direct\n' for category in sorted(categories)))
-        self.put('/etc/5gpn/exits/smart.yaml', 'old-smart\n')
-        self.put('/etc/5gpn/exits/smart.type', 'router\n')
-        self.put('/etc/5gpn/rulesets/existing', 'old-cache\n')
-        self.put('/opt/5gpn/etc/current-exit', 'smart\n')
-        self.put('/opt/5gpn/etc/mihomo/smart/runtime', 'old-runtime\n')
-        self.put('/opt/5gpn/bin/quic-proxy', 'old-binary\n', 0o755)
-        self.put('/opt/5gpn/bin/mihomo', '#!/bin/bash\n[[ "$FAIL" != smart_validation ]]\n', 0o755)
-        self.put('/var/lib/5gpn-quic/remote-dns', 'old-dns\n')
+        self.put('/etc/simcard-dns/exits/smart.yaml', 'old-smart\n')
+        self.put('/etc/simcard-dns/exits/smart.type', 'router\n')
+        self.put('/etc/simcard-dns/rulesets/existing', 'old-cache\n')
+        self.put('/opt/simcard-dns/etc/current-exit', 'smart\n')
+        self.put('/opt/simcard-dns/etc/mihomo/smart/runtime', 'old-runtime\n')
+        self.put('/opt/simcard-dns/bin/quic-proxy', 'old-binary\n', 0o755)
+        self.put('/opt/simcard-dns/bin/mihomo', '#!/bin/bash\n[[ "$FAIL" != smart_validation ]]\n', 0o755)
+        self.put('/var/lib/simcard-dns-quic/remote-dns', 'old-dns\n')
         self.put('/usr/local/bin/mosdns', '#!/bin/bash\n[[ "$FAIL" != renderer ]]\n', 0o755)
         self.put('/usr/local/bin/update-mosdns-rules.sh', 'old-updater\n', 0o755)
         self.put('/etc/systemd/system/quic-proxy.service', 'old-unit\n')
@@ -159,7 +159,7 @@ printf 'completed\\n'
         self.assertNotIn('unbound variable', self.detail)
         self.assertEqual(before, self.snapshot(), self.detail)
         self.assertEqual(states, self.states(), self.detail)
-        self.assertFalse(list(self.fs.glob('opt/5gpn/.upgrade-*')))
+        self.assertFalse(list(self.fs.glob('opt/simcard-dns/.upgrade-*')))
 
     def test_renderer_failure_rolls_back_through_actual_step(self):
         self.assert_rollback('renderer')
@@ -186,13 +186,13 @@ printf 'completed\\n'
         self.assertIn('enable dot-gate.service', events)
         self.assertLess(events.index('restart mosdns.service'), events.index('restart dot-gate.service'))
         self.assertTrue((self.fs / 'etc/systemd/system/dot-gate.service').exists())
-        self.assertTrue((self.fs / 'opt/5gpn/bin/dot-gate.py').exists())
+        self.assertTrue((self.fs / 'opt/simcard-dns/bin/dot-gate.py').exists())
 
     def test_smart_validation_failure_restores_runtime_and_cache(self):
         self.assert_rollback('smart_validation')
 
     def test_invalid_offline_rule_cache_reports_failure_and_rolls_back(self):
-        (self.fs / 'etc/5gpn/rules.conf').unlink()
+        (self.fs / 'etc/simcard-dns/rules.conf').unlink()
         self.put('/etc/mosdns/.remote_dns', '22.22.22.22\n')
         self.put('/etc/mosdns/.local_dns', '101.226.4.6 218.30.118.6 180.76.76.76 119.29.29.29\n')
         self.put('/etc/mosdns/gfwlist.txt', '')
@@ -220,7 +220,7 @@ printf 'completed\\n'
                 self.assertIn('stage=dns-preflight exit=1', self.detail)
                 self.assertEqual(before, self.snapshot())
                 self.assertFalse((self.root / 'events').exists())
-                self.assertFalse(list(self.fs.glob('opt/5gpn/.upgrade-*')))
+                self.assertFalse(list(self.fs.glob('opt/simcard-dns/.upgrade-*')))
                 path.write_text(old)
 
     def test_success_preserves_stopped_enabled_and_active_disabled_states(self):
@@ -234,22 +234,22 @@ printf 'completed\\n'
         self.assertIn('completed', result.stdout)
         self.assertEqual((self.root / 'lock-proof').read_text(), 'held\n')
         events = (self.root / 'events').read_text()
-        for unit in ('sniproxy', 'wa-shim', '5gpn-mihomo@smart'):
+        for unit in ('sniproxy', 'wa-shim', 'simcard-dns-mihomo@smart'):
             self.assertNotIn('restart ' + unit + '.service', events)
-        self.assertIn('restart 5gpn-tgbot.service', events)
+        self.assertIn('restart simcard-dns-tgbot.service', events)
         self.assertEqual([line for line in events.splitlines() if line.startswith('restart mosdns')],
                          ['restart mosdns.service'])
-        self.assertEqual((self.fs / 'var/lib/5gpn-quic/remote-dns').read_text(), '1.1.1.1\n')
-        self.assertFalse(list(self.fs.glob('opt/5gpn/.upgrade-*')))
+        self.assertEqual((self.fs / 'var/lib/simcard-dns-quic/remote-dns').read_text(), '1.1.1.1\n')
+        self.assertFalse(list(self.fs.glob('opt/simcard-dns/.upgrade-*')))
 
     def test_active_smart_upgrade_does_not_apply_routes_or_migrate_legacy_units(self):
-        (self.state / '5gpn-mihomo@smart').write_text('active')
+        (self.state / 'simcard-dns-mihomo@smart').write_text('active')
         result = self.run_upgrade()
         self.assertEqual(result.returncode, 0, self.detail)
         events = (self.root / 'events').read_text()
-        self.assertEqual(events.count('restart 5gpn-mihomo@smart.service'), 1)
+        self.assertEqual(events.count('restart simcard-dns-mihomo@smart.service'), 1)
         self.assertNotIn('singbox', events)
-        self.assertEqual((self.fs / 'opt/5gpn/etc/current-exit').read_text(), 'smart\n')
+        self.assertEqual((self.fs / 'opt/simcard-dns/etc/current-exit').read_text(), 'smart\n')
 
 
 if __name__ == '__main__':

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""DoT entry gate for 5GPN-X.
+"""DoT entry gate for simcard-dns.
 
 Owns the public DoT port and lets a TLS connection through to mosdns only when
 its ClientHello names the current DoT domain (SNI). Everything else -- a reset
@@ -26,7 +26,7 @@ BACKEND_HOST = os.environ.get("DOT_GATE_BACKEND_HOST", "127.0.0.1")
 BACKEND_PORT = int(os.environ.get("DOT_GATE_BACKEND_PORT", "8853"))
 CLIENT_SRC = os.environ.get("DOT_GATE_CLIENT_SRC", "127.0.0.2")
 OTHER_SRC = os.environ.get("DOT_GATE_OTHER_SRC", "127.0.0.3")
-DOMAIN_FILE = os.environ.get("DOT_GATE_DOMAIN_FILE", "/opt/5gpn/etc/.domain")
+DOMAIN_FILE = os.environ.get("DOT_GATE_DOMAIN_FILE", "/opt/simcard-dns/etc/.domain")
 CIDR_FILE = os.environ.get("DOT_GATE_CIDR_FILE", "/etc/mosdns/.client_cidrs")
 HELLO_TIMEOUT = float(os.environ.get("DOT_GATE_HELLO_TIMEOUT", "5"))
 CHECK_INTERVAL = float(os.environ.get("DOT_GATE_CHECK_INTERVAL", "2"))

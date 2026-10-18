@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 5GPN-X module: cert
+# simcard-dns module: cert
 # Extracted verbatim from install.sh (original formatting preserved).
 # Sourced by install.sh; not meant to run standalone.
 # shellcheck shell=bash
@@ -112,8 +112,8 @@ install_cert() {
     cert_live_dir="/etc/letsencrypt/live/${DOMAIN}"
     certbot_cmd=(certbot certonly --standalone -d "$DOMAIN" \
         --agree-tos -n --keep-until-expiring -m "${EMAIL:-admin@${DOMAIN}}" \
-        --pre-hook /usr/local/bin/5gpn-open-cert-http.sh \
-        --post-hook /usr/local/bin/5gpn-restore-firewall.sh)
+        --pre-hook /usr/local/bin/simcard-dns-open-cert-http.sh \
+        --post-hook /usr/local/bin/simcard-dns-restore-firewall.sh)
     local cb_cmd=("${certbot_cmd[@]}")
     if [[ -s "${cert_live_dir}/fullchain.pem" && -s "${cert_live_dir}/privkey.pem" ]]; then
         info "已存在证书，跳过签发。"
@@ -204,38 +204,38 @@ cleanup_certbot_standalone() {
 
 install_certbot_firewall_hooks() {
     mkdir -p /etc/letsencrypt/renewal-hooks/pre /etc/letsencrypt/renewal-hooks/post
-    cat > /usr/local/bin/5gpn-open-cert-http.sh <<'EOF'
+    cat > /usr/local/bin/simcard-dns-open-cert-http.sh <<'EOF'
 #!/bin/bash
 set -e
 systemctl stop sniproxy 2>/dev/null || true
 systemctl stop wa-shim 2>/dev/null || true
 if command -v nft >/dev/null 2>&1 && nft list table inet filter >/dev/null 2>&1; then
-    nft insert rule inet filter input tcp dport 80 accept comment '"5gpn-cert-http"' 2>/dev/null || { echo "Failed to open TCP/80 for certbot" >&2; /usr/local/bin/5gpn-restore-firewall.sh; exit 1; }
+    nft insert rule inet filter input tcp dport 80 accept comment '"simcard-dns-cert-http"' 2>/dev/null || { echo "Failed to open TCP/80 for certbot" >&2; /usr/local/bin/simcard-dns-restore-firewall.sh; exit 1; }
 elif command -v iptables >/dev/null 2>&1; then
-    iptables -I INPUT 1 -p tcp --dport 80 -m comment --comment 5gpn-cert-http -j ACCEPT 2>/dev/null || { echo "Failed to open TCP/80 for certbot" >&2; /usr/local/bin/5gpn-restore-firewall.sh; exit 1; }
+    iptables -I INPUT 1 -p tcp --dport 80 -m comment --comment simcard-dns-cert-http -j ACCEPT 2>/dev/null || { echo "Failed to open TCP/80 for certbot" >&2; /usr/local/bin/simcard-dns-restore-firewall.sh; exit 1; }
 fi
 EOF
-    cat > /usr/local/bin/5gpn-restore-firewall.sh <<'EOF'
+    cat > /usr/local/bin/simcard-dns-restore-firewall.sh <<'EOF'
 #!/bin/bash
 set -e
 # Delete only the tagged temporary rule. Reloading /etc/nftables.conf here
 # would be wrong when the firewall is user-managed (FIREWALL_MODE=preserve).
 if command -v nft >/dev/null 2>&1 && nft list table inet filter >/dev/null 2>&1; then
-    while h="$(nft --handle list chain inet filter input 2>/dev/null | awk '/5gpn-cert-http/ { print $NF; exit }')" && [ -n "$h" ]; do
+    while h="$(nft --handle list chain inet filter input 2>/dev/null | awk '/simcard-dns-cert-http/ { print $NF; exit }')" && [ -n "$h" ]; do
         nft delete rule inet filter input handle "$h" 2>/dev/null || break
     done
 fi
 if command -v iptables >/dev/null 2>&1; then
-    while iptables -D INPUT -p tcp --dport 80 -m comment --comment 5gpn-cert-http -j ACCEPT 2>/dev/null; do :; done
+    while iptables -D INPUT -p tcp --dport 80 -m comment --comment simcard-dns-cert-http -j ACCEPT 2>/dev/null; do :; done
 fi
 systemctl start sniproxy 2>/dev/null || true
 systemctl start wa-shim 2>/dev/null || true
 EOF
-    chmod +x /usr/local/bin/5gpn-open-cert-http.sh /usr/local/bin/5gpn-restore-firewall.sh
-    cp /usr/local/bin/5gpn-open-cert-http.sh /etc/letsencrypt/renewal-hooks/pre/10-5gpn-open-http.sh
-    cp /usr/local/bin/5gpn-restore-firewall.sh /etc/letsencrypt/renewal-hooks/post/90-5gpn-restore-firewall.sh
-    chmod +x /etc/letsencrypt/renewal-hooks/pre/10-5gpn-open-http.sh \
-        /etc/letsencrypt/renewal-hooks/post/90-5gpn-restore-firewall.sh
+    chmod +x /usr/local/bin/simcard-dns-open-cert-http.sh /usr/local/bin/simcard-dns-restore-firewall.sh
+    cp /usr/local/bin/simcard-dns-open-cert-http.sh /etc/letsencrypt/renewal-hooks/pre/10-simcard-dns-open-http.sh
+    cp /usr/local/bin/simcard-dns-restore-firewall.sh /etc/letsencrypt/renewal-hooks/post/90-simcard-dns-restore-firewall.sh
+    chmod +x /etc/letsencrypt/renewal-hooks/pre/10-simcard-dns-open-http.sh \
+        /etc/letsencrypt/renewal-hooks/post/90-simcard-dns-restore-firewall.sh
 }
 
 force_renew_cert() {
@@ -274,13 +274,13 @@ force_renew_cert() {
     if [[ -d "/etc/letsencrypt/live/${DOMAIN}" ]]; then
         certbot_cmd=(certbot certonly --standalone -d "$DOMAIN" --force-renewal \
             --agree-tos -n -m "${EMAIL:-admin@${DOMAIN}}" \
-            --pre-hook /usr/local/bin/5gpn-open-cert-http.sh \
-            --post-hook /usr/local/bin/5gpn-restore-firewall.sh)
+            --pre-hook /usr/local/bin/simcard-dns-open-cert-http.sh \
+            --post-hook /usr/local/bin/simcard-dns-restore-firewall.sh)
     else
         certbot_cmd=(certbot certonly --standalone -d "$DOMAIN" \
             --agree-tos -n -m "${EMAIL:-admin@${DOMAIN}}" \
-            --pre-hook /usr/local/bin/5gpn-open-cert-http.sh \
-            --post-hook /usr/local/bin/5gpn-restore-firewall.sh)
+            --pre-hook /usr/local/bin/simcard-dns-open-cert-http.sh \
+            --post-hook /usr/local/bin/simcard-dns-restore-firewall.sh)
     fi
     prepare_certbot_standalone || return 1
     trap cleanup_certbot_standalone RETURN
@@ -321,12 +321,17 @@ force_renew_cert() {
 # <label>.dns.<zone> covered by one wildcard certificate "*.dns.<zone>":
 # resetting the name needs no new certificate, never publishes the name in
 # Certificate Transparency logs, and the old name dies with its A record.
-CF_CREDENTIALS="${PGW_CF_CREDENTIALS:-/etc/5gpn/cloudflare.ini}"
-CF_CONF="${PGW_CF_CONF:-/etc/5gpn/cloudflare.conf}"
-CF_CERT_NAME="5gpn-wildcard"
+CF_CREDENTIALS="${PGW_CF_CREDENTIALS:-/etc/simcard-dns/cloudflare.ini}"
+CF_CONF="${PGW_CF_CONF:-/etc/simcard-dns/cloudflare.conf}"
 CF_DOT_LABEL="dns"
 MOSDNS_DIR="${PGW_MOSDNS_DIR:-/etc/mosdns}"
 LE_LIVE_DIR="${PGW_LE_LIVE:-/etc/letsencrypt/live}"
+CF_CERT_NAME="simcard-dns-wildcard"
+# Hosts migrated from 5GPN-X keep renewing their existing wildcard lineage
+# instead of issuing a second certificate.
+if [[ -d "${LE_LIVE_DIR}/5gpn-wildcard" && ! -d "${LE_LIVE_DIR}/${CF_CERT_NAME}" ]]; then
+    CF_CERT_NAME="5gpn-wildcard"
+fi
 LE_DEPLOY_HOOK_DIR="${PGW_LE_DEPLOY_HOOKS:-/etc/letsencrypt/renewal-hooks/deploy}"
 
 # cf_api METHOD PATH [JSON] -> prints the "result" member as JSON.
@@ -495,7 +500,7 @@ reset_dot_domain() {
     [[ -n "$ip" ]] || { get_public_ip; ip="$PUBLIC_IP"; }
     old="$(cat "${CONF_DIR}/.domain" 2>/dev/null || true)"
     new_id="$(cf_api POST "/zones/${zone_id}/dns_records" \
-        "{\"type\":\"A\",\"name\":\"${new}\",\"content\":\"${ip}\",\"ttl\":60,\"proxied\":false,\"comment\":\"5gpn-x DoT\"}" \
+        "{\"type\":\"A\",\"name\":\"${new}\",\"content\":\"${ip}\",\"ttl\":60,\"proxied\":false,\"comment\":\"simcard-dns-x DoT\"}" \
         | cf_json 'r["id"]')" || { err "Could not create the DNS record"; exit 1; }
     info "A record created: ${new} -> ${ip}; waiting until it resolves..."
     until domain_resolves_to_public_ip "$new" "$ip"; do

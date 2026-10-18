@@ -9,9 +9,9 @@ CHINALIST_RAW="${BASE_DIR}/chinalist.raw"
 GFWLIST_FILE="${BASE_DIR}/gfwlist.txt"
 CHINALIST_FILE="${BASE_DIR}/chinalist.txt"
 GFWLIST_EXTRA_FILE="${BASE_DIR}/gfwlist-extra-local.txt"
-DEFAULT_RULES_FILE="${PGW_DEFAULT_RULES_FILE:-/etc/5gpn/rules-default.conf}"
-USER_RULES_FILE="${PGW_RULES_FILE:-/etc/5gpn/rules.conf}"
-POLICY_MAP_FILE="${PGW_POLICY_MAP:-/etc/5gpn/policy-map.conf}"
+DEFAULT_RULES_FILE="${PGW_DEFAULT_RULES_FILE:-/etc/simcard-dns/rules-default.conf}"
+USER_RULES_FILE="${PGW_RULES_FILE:-/etc/simcard-dns/rules.conf}"
+POLICY_MAP_FILE="${PGW_POLICY_MAP:-/etc/simcard-dns/policy-map.conf}"
 MOSDNS_TEMPLATE="${BASE_DIR}/config.yaml.template"
 MOSDNS_CONF="${BASE_DIR}/config.yaml"
 DEFAULT_REMOTE_DNS=("1.1.1.1" "8.8.8.8" "9.9.9.9")
@@ -378,7 +378,7 @@ update_domain_cache() {
 }
 
 # A single inherited flock serializes CLI mutations and timer updates.
-lock_file="${PGW_ROUTING_LOCK_FILE:-/run/lock/5gpn-routing.lock}"
+lock_file="${PGW_ROUTING_LOCK_FILE:-/run/lock/simcard-dns-routing.lock}"
 if [[ "${PGW_ROUTING_LOCK_FD:-}" != 9 || "$(readlink /proc/$BASHPID/fd/9 2>/dev/null || true)" != "$lock_file" ]]; then
     mkdir -p "$(dirname "$lock_file")"
     exec 9>"$lock_file"

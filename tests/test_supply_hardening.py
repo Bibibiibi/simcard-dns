@@ -47,7 +47,7 @@ install_deps
             marker = Path(tmp) / "data"
             marker.write_text("keep")
             launcher = Path(tmp) / "bootstrap.sh"
-            launcher.write_text("set -euo pipefail\n" + (ROOT / "install.sh").read_text().split("bootstrap_install() (\n", 1)[1].split("\n)\n", 1)[0].replace('RUNTIME_DIR="/opt/5gpn"', f'RUNTIME_DIR="{tmp}/runtime"'))
+            launcher.write_text("set -euo pipefail\n" + (ROOT / "install.sh").read_text().split("bootstrap_install() (\n", 1)[1].split("\n)\n", 1)[0].replace('RUNTIME_DIR="/opt/simcard-dns"', f'RUNTIME_DIR="{tmp}/runtime"'))
             env = dict(os.environ, PGW_SRC_DIR=tmp, PGW_COMMIT="invalid")
             result = subprocess.run(["bash", str(launcher)], env=env,
                                     capture_output=True, text=True)

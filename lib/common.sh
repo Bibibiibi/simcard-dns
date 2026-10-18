@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 5GPN-X module: common
+# simcard-dns module: common
 # Extracted verbatim from install.sh (original formatting preserved).
 # Sourced by install.sh; not meant to run standalone.
 # shellcheck shell=bash
@@ -17,11 +17,11 @@ warn()  { printf '%b!%b %s\n' "${YELLOW:-}" "${NC:-}" "$*"; }
 err()   { printf '%b✗%b %s\n' "${RED:-}" "${NC:-}" "$*" >&2; }
 
 init_install_log() {
-    INSTALL_LOG="${INSTALL_LOG:-/var/log/5gpn-install.log}"
+    INSTALL_LOG="${INSTALL_LOG:-/var/log/simcard-dns-install.log}"
     mkdir -p "$(dirname "$INSTALL_LOG")"
     : > "$INSTALL_LOG"
     chmod 0600 "$INSTALL_LOG"
-    printf '[%s] 5GPN-X installation started\n' "$(date '+%Y-%m-%d %H:%M:%S')" >> "$INSTALL_LOG"
+    printf '[%s] simcard-dns installation started\n' "$(date '+%Y-%m-%d %H:%M:%S')" >> "$INSTALL_LOG"
 }
 
 install_error_summary_from_log() {

@@ -4,7 +4,7 @@
 
 ## 目录职责
 
-- `install.sh`：唯一安装入口，同时把管理参数转给已安装的 `5gpn-ctl`。
+- `install.sh`：唯一安装入口，同时把管理参数转给已安装的 `simcard-dns`。
 - `lib/common.sh`：共享路径、日志、校验和基础工具。
 - `lib/dns.sh`、`lib/rules.sh`：DNS、规则与配置事务。
 - `lib/cert.sh`：证书申请和续期。

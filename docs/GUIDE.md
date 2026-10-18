@@ -2,7 +2,7 @@
 
 [返回首页](../README.md) · [安装、升级与排障](INSTALL.md)
 
-先用 `sudo /opt/5gpn/bin/5gpn-ctl --status` 检查状态；完整参数可用 `--help` 查看。以下命令中的域名、出口名和节点链接请换成自己的值。
+先用 `sudo /opt/simcard-dns/bin/simcard-dns --status` 检查状态；完整参数可用 `--help` 查看。以下命令中的域名、出口名和节点链接请换成自己的值。
 
 ## 出口管理
 
@@ -10,14 +10,14 @@
 
 ```bash
 # WireGuard：导入你自己准备好的 WireGuard client 配置
-sudo /opt/5gpn/bin/5gpn-ctl --add-exit us us.conf
+sudo /opt/simcard-dns/bin/simcard-dns --add-exit us us.conf
 
 # URI 出口
-sudo /opt/5gpn/bin/5gpn-ctl --add-exit jp 'socks5://user:pass@1.2.3.4:1080'
-sudo /opt/5gpn/bin/5gpn-ctl --add-exit hk 'ss://2022-blake3-aes-128-gcm:PASSWORD@5.6.7.8:443'
+sudo /opt/simcard-dns/bin/simcard-dns --add-exit jp 'socks5://user:pass@1.2.3.4:1080'
+sudo /opt/simcard-dns/bin/simcard-dns --add-exit hk 'ss://2022-blake3-aes-128-gcm:PASSWORD@5.6.7.8:443'
 
 # 切换 / 验证
-sudo /opt/5gpn/bin/5gpn-ctl --set-exit hk
+sudo /opt/simcard-dns/bin/simcard-dns --set-exit hk
 curl --interface pgw-hk -4 -s https://api.ipify.org; echo
 ```
 
@@ -28,10 +28,10 @@ printf 'socks5://1.2.3.4:1080
 user: myuser
 pass: my@p:ss/word
 remote-dns: on
-' | sudo /opt/5gpn/bin/5gpn-ctl --add-exit jp
+' | sudo /opt/simcard-dns/bin/simcard-dns --add-exit jp
 ```
 
-当前出口记录在 `/opt/5gpn/etc/current-exit`，开机自动恢复。
+当前出口记录在 `/opt/simcard-dns/etc/current-exit`，开机自动恢复。
 
 ## 智能分流
 
@@ -56,16 +56,16 @@ RULE-SET,https://example.com/rules.mrs,jp
 FINAL,us
 EOF
 
-sudo /opt/5gpn/bin/5gpn-ctl --set-rules rules.conf
-sudo /opt/5gpn/bin/5gpn-ctl --set-exit smart
+sudo /opt/simcard-dns/bin/simcard-dns --set-rules rules.conf
+sudo /opt/simcard-dns/bin/simcard-dns --set-exit smart
 ```
 
 单独追加规则或规则集（不覆盖整份文件）：
 
 ```bash
-sudo /opt/5gpn/bin/5gpn-ctl --add-rule 'DOMAIN-SUFFIX,openai.com,us'
-sudo /opt/5gpn/bin/5gpn-ctl --add-rule 'GEOSITE,openai,local'      # 经服务器本机 IP 出去
-sudo /opt/5gpn/bin/5gpn-ctl --add-ruleset 'https://example.com/openai.mrs' us
+sudo /opt/simcard-dns/bin/simcard-dns --add-rule 'DOMAIN-SUFFIX,openai.com,us'
+sudo /opt/simcard-dns/bin/simcard-dns --add-rule 'GEOSITE,openai,local'      # 经服务器本机 IP 出去
+sudo /opt/simcard-dns/bin/simcard-dns --add-ruleset 'https://example.com/openai.mrs' us
 ```
 
 规则类型：`DOMAIN`、`DOMAIN-SUFFIX`、`DOMAIN-KEYWORD`、`IP-CIDR`、`GEOSITE`、`GEOIP`、`RULE-SET`、`FINAL`。
@@ -75,8 +75,8 @@ sudo /opt/5gpn/bin/5gpn-ctl --add-ruleset 'https://example.com/openai.mrs' us
 导入整份规则并按分类映射出口：
 
 ```bash
-sudo /opt/5gpn/bin/5gpn-ctl --import-rules /path/to/rule.conf
-sudo /opt/5gpn/bin/5gpn-ctl --set-policy Netflix hk
+sudo /opt/simcard-dns/bin/simcard-dns --import-rules /path/to/rule.conf
+sudo /opt/simcard-dns/bin/simcard-dns --set-policy Netflix hk
 ```
 
 ## 手机卡接入
@@ -102,8 +102,8 @@ sudo /opt/5gpn/bin/5gpn-ctl --set-policy Netflix hk
 3. **写入客户端网段**（会替换整个列表；空格或逗号分隔，单个 IP 自动视为 `/32`）：
 
    ```bash
-   sudo /opt/5gpn/bin/5gpn-ctl --set-client-cidrs "103.143.92.0/23 203.0.113.0/24 198.51.100.0/22"
-   sudo /opt/5gpn/bin/5gpn-ctl --status   # 查看 Client CIDRs
+   sudo /opt/simcard-dns/bin/simcard-dns --set-client-cidrs "103.143.92.0/23 203.0.113.0/24 198.51.100.0/22"
+   sudo /opt/simcard-dns/bin/simcard-dns --status   # 查看 Client CIDRs
    ```
 
    首次安装可直接设置 `CLIENT_CIDRS="203.0.113.0/24 198.51.100.0/22"`。
@@ -111,10 +111,10 @@ sudo /opt/5gpn/bin/5gpn-ctl --set-policy Netflix hk
    也可以按运营商的 ASN 整体加入或删除（网段来自 RIPEstat 公开路由数据，只取 IPv4）。默认的 CTMO 网段登记为 `AS136167`；删除某个 ASN 只移除它自己的网段，其他 ASN 和手动网段保留：
 
    ```bash
-   sudo /opt/5gpn/bin/5gpn-ctl --lookup-client-asn AS63527   # 只查询，不修改
-   sudo /opt/5gpn/bin/5gpn-ctl --add-client-asn AS63527
-   sudo /opt/5gpn/bin/5gpn-ctl --list-client-asns
-   sudo /opt/5gpn/bin/5gpn-ctl --del-client-asn AS63527
+   sudo /opt/simcard-dns/bin/simcard-dns --lookup-client-asn AS63527   # 只查询，不修改
+   sudo /opt/simcard-dns/bin/simcard-dns --add-client-asn AS63527
+   sudo /opt/simcard-dns/bin/simcard-dns --list-client-asns
+   sudo /opt/simcard-dns/bin/simcard-dns --del-client-asn AS63527
    ```
 
    Telegram Bot 主菜单的「🛡 白名单」提供同样的功能：添加前会显示运营商名称和网段数量，确认后才生效，删除也需要确认。
@@ -124,7 +124,7 @@ sudo /opt/5gpn/bin/5gpn-ctl --set-policy Netflix hk
    **注意**：如果主机没有防火墙（INPUT 全部放行），80/443 对所有人开放，任何知道服务器 IP 的人都能直接把它当开放代理用，扫描器很快就会找上门。没有其他防火墙需求时，推荐让项目接管 INPUT：
 
    ```bash
-   sudo FIREWALL_MODE=managed /opt/5gpn/bin/5gpn-ctl --set-client-cidrs "<当前客户端网段>"
+   sudo FIREWALL_MODE=managed /opt/simcard-dns/bin/simcard-dns --set-client-cidrs "<当前客户端网段>"
    ```
 
    效果：80/443 和 UDP 443 只放行客户端网段；853、8111 和检测到的 SSH 端口对所有人开放；其余入站全部拒绝，规则开机自动加载。原规则备份为 `/etc/nftables.conf.pgw-backup`。853 不建议限制为客户端网段：Android 私人 DNS 在 Wi-Fi 下同样强制使用，限制后连 Wi-Fi 会无法解析。
@@ -132,10 +132,10 @@ sudo /opt/5gpn/bin/5gpn-ctl --set-policy Netflix hk
    **可选：地区限制**（仅 managed nftables 防火墙）：让 SSH、853 和 8111 只接受香港、澳门、台湾的 IP 与客户端网段连入，其他地区的新连接直接丢弃。地区网段取自 APNIC 每日发布的分配数据（按登记国家，校验 MD5 与记录数），每天自动更新；下载或校验失败时保留旧名单。客户端网段始终放行。
 
    ```bash
-   sudo /opt/5gpn/bin/5gpn-ctl --geo-allow on       # 开启（首次会下载名单）
-   sudo /opt/5gpn/bin/5gpn-ctl --geo-allow status   # 状态、名单日期、已拦截包数
-   sudo /opt/5gpn/bin/5gpn-ctl --geo-allow update   # 立即更新名单
-   sudo /opt/5gpn/bin/5gpn-ctl --geo-allow off      # 关闭
+   sudo /opt/simcard-dns/bin/simcard-dns --geo-allow on       # 开启（首次会下载名单）
+   sudo /opt/simcard-dns/bin/simcard-dns --geo-allow status   # 状态、名单日期、已拦截包数
+   sudo /opt/simcard-dns/bin/simcard-dns --geo-allow update   # 立即更新名单
+   sudo /opt/simcard-dns/bin/simcard-dns --geo-allow off      # 关闭
    ```
 
    Telegram Bot 主菜单的「🌏 港澳台连接」按钮显示当前开关状态，点进去可以开启（需确认）、关闭或更新名单；「🛡 白名单」页也有同一入口。开启前会检查当前 SSH 会话和已登录会话的来源 IP，不在允许范围内就拒绝开启（`PGW_GEO_FORCE=1` 可强制）。注意：
@@ -160,12 +160,12 @@ sudo /opt/5gpn/bin/5gpn-ctl --set-policy Netflix hk
 2. 在服务器上接入（Token 输入时不显示，不要写在命令行参数里）：
 
    ```bash
-   sudo /opt/5gpn/bin/5gpn-ctl --setup-cloudflare
+   sudo /opt/simcard-dns/bin/simcard-dns --setup-cloudflare
    ```
 
    程序会根据当前域名自动找到 Cloudflare 区域，并通过 DNS 验证签发通配符证书 `*.dns.<你的域名>`，之后自动续期（不需要开放 80 端口）。
 
-3. 重置：Telegram Bot「🛠️ 域名 DNS 管理 → 🔄 重置域名」，或执行 `sudo /opt/5gpn/bin/5gpn-ctl --reset-domain`。会生成 `<20 位随机>.dns.<你的域名>`，在 Cloudflare 添加解析（仅 DNS，不开代理），切换私人 DNS 并删除旧域名指向本机的解析；任何一步失败都会回滚。
+3. 重置：Telegram Bot「🛠️ 域名 DNS 管理 → 🔄 重置域名」，或执行 `sudo /opt/simcard-dns/bin/simcard-dns --reset-domain`。会生成 `<20 位随机>.dns.<你的域名>`，在 Cloudflare 添加解析（仅 DNS，不开代理），切换私人 DNS 并删除旧域名指向本机的解析；任何一步失败都会回滚。
 
 用通配符证书的好处：重置不需要重新签证书，新域名也不会出现在公开的证书透明度日志里。
 
@@ -174,7 +174,7 @@ sudo /opt/5gpn/bin/5gpn-ctl --set-policy Netflix hk
 ## Telegram Bot
 
 ```bash
-sudo /opt/5gpn/bin/5gpn-ctl --setup-tgbot
+sudo /opt/simcard-dns/bin/simcard-dns --setup-tgbot
 ```
 
 按提示输入 Bot Token 和管理员数字 ID。可先通过 Telegram 的 ID 查询机器人获取自己的 ID；启用后也可向本 Bot 发送 `/id` 核对。不要公开 Token。已有配置会用于后续设置。
@@ -185,7 +185,7 @@ sudo /opt/5gpn/bin/5gpn-ctl --setup-tgbot
 
 添加出口：`🌐 出口 -> ➕ 添加出口`，直接粘贴节点链接（`ss:// vmess:// trojan:// vless:// hysteria2:// tuic:// anytls:// socks5:// http://`），备注会自动作为出口名。
 
-轮询进度持久化在 `/var/lib/5gpn/tgbot-state.json`（权限 600），服务重启后从断点继续；停机期间尚未确认的积压更新仍可能被处理。Telegram 的下一次 `getUpdates(offset)` 即确认更小 ID，并不是本地保存 offset 才确认。被 Telegram 限流（429）时按 `retry_after` 等待，其他轮询失败指数退避（上限 60s）。如需自定义状态文件路径，把 `TG_STATE_FILE` 写入 `/opt/5gpn/etc/tgbot.env` 后重启服务。
+轮询进度持久化在 `/var/lib/simcard-dns/tgbot-state.json`（权限 600），服务重启后从断点继续；停机期间尚未确认的积压更新仍可能被处理。Telegram 的下一次 `getUpdates(offset)` 即确认更小 ID，并不是本地保存 offset 才确认。被 Telegram 限流（429）时按 `retry_after` 等待，其他轮询失败指数退避（上限 60s）。如需自定义状态文件路径，把 `TG_STATE_FILE` 写入 `/opt/simcard-dns/etc/tgbot.env` 后重启服务。
 
 点击 iOS 二维码会先发送新图片，再删除主菜单；旧菜单超过 Telegram 删除时限时会改为无按钮的提示。返回时删除二维码并恢复主菜单，重启后仍可返回。超过删除时限或 API 拒绝时会清除二维码按钮并提示手动删除；网络故障也可能阻止清除按钮或恢复菜单，此时请重试 `/menu`。
 
@@ -195,11 +195,11 @@ sudo /opt/5gpn/bin/5gpn-ctl --setup-tgbot
 
 | 路径 | 说明 |
 | --- | --- |
-| `/opt/5gpn-source` | 默认固定提交源码目录（与运行数据分离） |
-| `/opt/5gpn` | 运行时主目录（`bin/5gpn-ctl`、`bin/tgbot.py`、`bin/mihomo` 等） |
-| `/opt/5gpn/etc/current-exit` | 当前出口 |
-| `/opt/5gpn/etc/tgbot.env` | Bot Token 和管理员 ID（权限 600） |
-| `/var/lib/5gpn/tgbot-state.json` | tgbot 轮询断点，重启续传（权限 600） |
+| `/opt/simcard-dns-source` | 默认固定提交源码目录（与运行数据分离） |
+| `/opt/simcard-dns` | 运行时主目录（`bin/simcard-dns`、`bin/tgbot.py`、`bin/mihomo` 等） |
+| `/opt/simcard-dns/etc/current-exit` | 当前出口 |
+| `/opt/simcard-dns/etc/tgbot.env` | Bot Token 和管理员 ID（权限 600） |
+| `/var/lib/simcard-dns/tgbot-state.json` | tgbot 轮询断点，重启续传（权限 600） |
 | `/etc/mosdns/config.yaml` | mosdns 实际配置 |
 | `/etc/mosdns/gfwlist-extra-local.txt` | 本地补充 GFWList 域名 |
 | `/etc/sniproxy.conf` | sniproxy 配置（resolver 强制 `ipv4_only`） |
@@ -227,7 +227,7 @@ MIHOMO_VERSION="1.19.28"        # 覆盖锁定版；非锁定版本跳过 sha256
 MOSDNS_VERSION="5.3.4"          # 覆盖锁定版；行为同 MIHOMO_VERSION
 TG_BOT_TOKEN="123456:ABC"
 TG_ADMIN_IDS="11111111,22222222"
-TG_STATE_FILE="/var/lib/5gpn/tgbot-state.json"  # tgbot 轮询断点路径；自定义时写入 tgbot.env
+TG_STATE_FILE="/var/lib/simcard-dns/tgbot-state.json"  # tgbot 轮询断点路径；自定义时写入 tgbot.env
 FIREWALL_MODE=preserve          # preserve(默认)/auto/managed，见下方说明
 PGW_TUNING=essential            # essential(默认)/performance 内核调优档位
 ```
@@ -262,12 +262,12 @@ PGW_TUNING=essential            # essential(默认)/performance 内核调优档�
 **如何更新 DNS 规则？**
 
 ```bash
-sudo /opt/5gpn/bin/5gpn-ctl --update-rules
+sudo /opt/simcard-dns/bin/simcard-dns --update-rules
 ```
 
 **服务、证书或 DoT 出问题？** 先看 [安装与排障指南](INSTALL.md#5-失败排查)。
 
-**从旧 sing-box 版本升级？** 内核级迁移：旧 sing-box 服务和二进制会被移除，旧配置备份到 `/etc/5gpn/exits/singbox-backup/`。URI 出口需用原节点链接重新 `--add-exit`；`rules.conf` 和策略映射保留，出口补齐后重新 `--set-rules` / `--set-exit smart`。当前 WireGuard 出口不受影响。
+**从旧 sing-box 版本升级？** 内核级迁移：旧 sing-box 服务和二进制会被移除，旧配置备份到 `/etc/simcard-dns/exits/singbox-backup/`。URI 出口需用原节点链接重新 `--add-exit`；`rules.conf` 和策略映射保留，出口补齐后重新 `--set-rules` / `--set-exit smart`。当前 WireGuard 出口不受影响。
 
 **WhatsApp Patch 的风险控制？** wa-shim 仅对客户端网段和 loopback 来源启用 ED/WA 分流；未知协议、TLS ClientHello、短包和超时都 fail-open 到 sniproxy；以 `pxout` 用户运行，跟随当前出口出站。
 

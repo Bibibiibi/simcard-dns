@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 5GPN-X module: services
+# simcard-dns module: services
 # Extracted verbatim from install.sh (original formatting preserved).
 # Sourced by install.sh; not meant to run standalone.
 # shellcheck shell=bash
@@ -14,7 +14,7 @@ install_deps() {
     if [[ -n "${INSTALL_LOG:-}" ]]; then
         pkg_log="$INSTALL_LOG"
     else
-        pkg_log="$(mktemp /tmp/5gpn-packages.XXXXXX.log)"
+        pkg_log="$(mktemp /tmp/simcard-dns-packages.XXXXXX.log)"
         temporary_pkg_log=1
     fi
     if [[ "${OS:-}" == "debian" && "${VER%%.*}" -ge 13 ]]; then
@@ -81,7 +81,7 @@ install_deps() {
             amd64) go_sha="ba79d4526102575196273416239cca418a651e049c2b099f3159db85e7bade7d" ;;
             arm64) go_sha="a8e177c354d2e4a1b61020aca3562e27ea3e8f8247eca3170e3fa1e0c2f9e771" ;;
         esac
-        go_tmp="$(mktemp /tmp/5gpn-go.XXXXXX.tar.gz)" || return 1
+        go_tmp="$(mktemp /tmp/simcard-dns-go.XXXXXX.tar.gz)" || return 1
         if ! wget -q "https://go.dev/dl/go${GO_VER}.linux-${GO_ARCH}.tar.gz" -O "$go_tmp"; then
             rm -f "$go_tmp"
             err "Go download failed"
@@ -181,7 +181,7 @@ install_sniproxy() {
         if [[ -n "${INSTALL_LOG:-}" ]]; then
             build_log="$INSTALL_LOG"
         else
-            build_log="$(mktemp /tmp/5gpn-sniproxy-build.XXXXXX.log)"
+            build_log="$(mktemp /tmp/simcard-dns-sniproxy-build.XXXXXX.log)"
             temporary_build_log=1
         fi
         if ! (
@@ -284,7 +284,7 @@ EOF
     chmod 600 "${CONF_DIR}/wa-shim.env"
     cat > /etc/systemd/system/wa-shim.service <<EOF
 [Unit]
-Description=5GPN-X iOS WhatsApp no-SNI shim
+Description=simcard-dns iOS WhatsApp no-SNI shim
 After=network-online.target sniproxy.service
 Wants=network-online.target
 Requires=sniproxy.service
@@ -317,7 +317,7 @@ EOF
 write_dot_gate_unit() {
     cat > /etc/systemd/system/dot-gate.service <<EOF
 [Unit]
-Description=5GPN-X DoT entry gate (current-domain SNI check)
+Description=simcard-dns DoT entry gate (current-domain SNI check)
 After=network-online.target mosdns.service
 Wants=network-online.target mosdns.service
 
@@ -359,7 +359,7 @@ install_quic_proxy() {
         if [[ -n "${INSTALL_LOG:-}" ]]; then
             build_log="$INSTALL_LOG"
         else
-            build_log="$(mktemp /tmp/5gpn-quicproxy-build.XXXXXX.log)"
+            build_log="$(mktemp /tmp/simcard-dns-quicproxy-build.XXXXXX.log)"
             temporary_build_log=1
         fi
         mkdir -p "${BASE_DIR}/bin"
@@ -382,7 +382,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/opt/5gpn/bin/quic-proxy -l 0.0.0.0:443 -dns-file /var/lib/5gpn-quic/remote-dns
+ExecStart=/opt/simcard-dns/bin/quic-proxy -l 0.0.0.0:443 -dns-file /var/lib/simcard-dns-quic/remote-dns
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5
@@ -505,7 +505,7 @@ generate_ios_profile() {
             <key>PayloadDisplayName</key>
             <string>Proxy Gateway Cellular DoT</string>
             <key>PayloadIdentifier</key>
-            <string>com.5gpn.${DOMAIN}.dnssettings</string>
+            <string>com.simcard-dns.${DOMAIN}.dnssettings</string>
             <key>PayloadType</key>
             <string>com.apple.dnsSettings.managed</string>
             <key>PayloadUUID</key>
@@ -519,7 +519,7 @@ generate_ios_profile() {
     <key>PayloadDisplayName</key>
     <string>Proxy Gateway Cellular DoT</string>
     <key>PayloadIdentifier</key>
-    <string>com.5gpn.${DOMAIN}</string>
+    <string>com.simcard-dns.${DOMAIN}</string>
     <key>PayloadOrganization</key>
     <string>Proxy Gateway</string>
     <key>PayloadRemovalDisallowed</key>
@@ -552,11 +552,11 @@ EOF
     if [[ -f "${LIB_DIR}/ios-http.py" ]]; then
         install -m 0755 "${LIB_DIR}/ios-http.py" "${BASE_DIR}/bin/ios-http.py"
     fi
-    if systemctl list-unit-files 2>/dev/null | grep -q '^5gpn-ios-profile\.service'; then
-        systemctl disable --now 5gpn-ios-profile.service 2>/dev/null || true
+    if systemctl list-unit-files 2>/dev/null | grep -q '^simcard-dns-ios-profile\.service'; then
+        systemctl disable --now simcard-dns-ios-profile.service 2>/dev/null || true
     fi
-    rm -f /etc/systemd/system/5gpn-ios-profile.service
-    cat > /etc/systemd/system/5gpn-ios-profile.socket <<EOF
+    rm -f /etc/systemd/system/simcard-dns-ios-profile.service
+    cat > /etc/systemd/system/simcard-dns-ios-profile.socket <<EOF
 [Unit]
 Description=Proxy Gateway iOS profile HTTP socket
 
@@ -567,7 +567,7 @@ Accept=yes
 [Install]
 WantedBy=sockets.target
 EOF
-    cat > /etc/systemd/system/5gpn-ios-profile@.service <<EOF
+    cat > /etc/systemd/system/simcard-dns-ios-profile@.service <<EOF
 [Unit]
 Description=Proxy Gateway iOS profile responder (per-connection)
 
@@ -581,7 +581,7 @@ StandardError=journal
 User=root
 EOF
     systemctl daemon-reload
-    systemctl enable --quiet --now 5gpn-ios-profile.socket
+    systemctl enable --quiet --now simcard-dns-ios-profile.socket
     echo "$profile_url" > "${WWW_DIR}/ios-profile-url.txt"
     if command -v qrencode >/dev/null 2>&1; then
         qrencode -t ANSIUTF8 "$profile_url" > "${WWW_DIR}/ios-dot.qr.txt"
@@ -667,7 +667,7 @@ collect_tgbot_settings() {
 
 install_ctl_entrypoint() {
     # The modular refactor split install.sh into lib/*.sh. The installed
-    # `5gpn-ctl` re-runs install.sh for subcommands (--set-exit, --del-exit,
+    # `simcard-dns` re-runs install.sh for subcommands (--set-exit, --del-exit,
     # --check-exits, ...), so it must find every module next to itself; otherwise
     # bootstrap_from_repo_if_needed falls back to `git clone`, which fails on
     # offline hosts and breaks all runtime management. Ship the entrypoint and
@@ -675,7 +675,7 @@ install_ctl_entrypoint() {
     local ctl_dir="${BASE_DIR}/bin"
     local ctl_lib="${ctl_dir}/lib"
     local libs=(
-        common.sh dns.sh cert.sh services.sh exits.sh rules.sh uninstall.sh
+        common.sh dns.sh cert.sh services.sh exits.sh rules.sh uninstall.sh migrate.sh
         renew-hook.sh sniproxy.conf quic-proxy.go mosdns.yaml.template
         update-rules.sh ios-http.py tgbot.py wa-shim.py dot-gate.py rules-import.py
         mihomo-exit-config.py mihomo-router-config.py rules-default.conf
@@ -685,16 +685,24 @@ install_ctl_entrypoint() {
     local f
     for f in "${libs[@]}"; do
         if [[ ! -f "${LIB_DIR}/${f}" ]]; then
-            err "lib/${f} not found in ${LIB_DIR}; cannot build a self-contained 5gpn-ctl"
+            err "lib/${f} not found in ${LIB_DIR}; cannot build a self-contained simcard-dns"
             return 1
         fi
-        # When run from the installed 5gpn-ctl, LIB_DIR already is ctl_lib;
+        # When run from the installed simcard-dns, LIB_DIR already is ctl_lib;
         # copying a file onto itself makes install(1) fail.
         [[ "${LIB_DIR}/${f}" -ef "${ctl_lib}/${f}" ]] && continue
         install -m 0644 "${LIB_DIR}/${f}" "${ctl_lib}/${f}" || return 1
     done
-    [[ "${SCRIPT_PATH}" -ef "${ctl_dir}/5gpn-ctl" ]] && return 0
-    install -m 0755 "${SCRIPT_PATH}" "${ctl_dir}/5gpn-ctl"
+    # Short command on PATH. A wrapper, not a symlink: the entrypoint locates
+    # its lib/ next to its own path.
+    local shim="${PGW_CTL_SHIM:-/usr/local/bin/simcard-dns}"
+    if mkdir -p "$(dirname "$shim")" 2>/dev/null; then
+        if printf '#!/bin/sh\nexec bash %s/simcard-dns "$@"\n' "$ctl_dir" > "$shim"; then
+            chmod 755 "$shim" || true
+        fi
+    fi
+    [[ "${SCRIPT_PATH}" -ef "${ctl_dir}/simcard-dns" ]] && return 0
+    install -m 0755 "${SCRIPT_PATH}" "${ctl_dir}/simcard-dns"
 }
 
 setup_tgbot() {
@@ -728,11 +736,11 @@ setup_tgbot() {
             return 1
         fi
     fi
-    printf '\nTG_BOT_TOKEN=%s\nTG_ADMIN_IDS=%s\nMGMT=%s/bin/5gpn-ctl\n' "$token" "$ids" "$BASE_DIR" >> "$env_tmp"
+    printf '\nTG_BOT_TOKEN=%s\nTG_ADMIN_IDS=%s\nMGMT=%s/bin/simcard-dns\n' "$token" "$ids" "$BASE_DIR" >> "$env_tmp"
     chmod 600 "$env_tmp"
     mv -f "$env_tmp" "${CONF_DIR}/tgbot.env"
     chmod 600 "${CONF_DIR}/tgbot.env"
-    cat > /etc/systemd/system/5gpn-tgbot.service <<EOF
+    cat > /etc/systemd/system/simcard-dns-tgbot.service <<EOF
 [Unit]
 Description=Proxy Gateway Telegram control bot
 After=network-online.target
@@ -752,12 +760,12 @@ LimitCORE=0
 WantedBy=multi-user.target
 EOF
     systemctl daemon-reload
-    systemctl enable --quiet 5gpn-tgbot.service || return $?
-    systemctl restart 5gpn-tgbot.service || return $?
-    systemctl is-active --quiet 5gpn-tgbot.service || return $?
+    systemctl enable --quiet simcard-dns-tgbot.service || return $?
+    systemctl restart simcard-dns-tgbot.service || return $?
+    systemctl is-active --quiet simcard-dns-tgbot.service || return $?
     if [[ -z "$ids" ]]; then
         warn "尚未设置授权 ID。给 Bot 发送 /id 获取数字 ID，填入 ${CONF_DIR}/tgbot.env 的 TG_ADMIN_IDS，然后:"
-        warn "  systemctl restart 5gpn-tgbot"
+        warn "  systemctl restart simcard-dns-tgbot"
     fi
     ok "Telegram bot 已安装。在 Telegram 给你的 Bot 发送 /start 开始操作。"
 }
@@ -812,15 +820,15 @@ show_status() {
             echo -e "$svc: ${RED}$status${NC}"
         fi
     done
-    ios_status=$(systemctl is-active 5gpn-ios-profile.socket 2>/dev/null || echo "unknown")
+    ios_status=$(systemctl is-active simcard-dns-ios-profile.socket 2>/dev/null || echo "unknown")
     if [[ "$ios_status" == "active" ]]; then
-        echo -e "5gpn-ios-profile.socket: ${GREEN}listening${NC}"
+        echo -e "simcard-dns-ios-profile.socket: ${GREEN}listening${NC}"
     else
-        echo -e "5gpn-ios-profile.socket: ${RED}$ios_status${NC}"
+        echo -e "simcard-dns-ios-profile.socket: ${RED}$ios_status${NC}"
     fi
-    if systemctl list-unit-files 2>/dev/null | grep -q '^5gpn-tgbot\.service'; then
-        tg_status=$(systemctl is-active 5gpn-tgbot 2>/dev/null || echo "unknown")
-        echo -e "5gpn-tgbot: $([[ "$tg_status" == active ]] && echo "${GREEN}running${NC}" || echo "${RED}$tg_status${NC}")"
+    if systemctl list-unit-files 2>/dev/null | grep -q '^simcard-dns-tgbot\.service'; then
+        tg_status=$(systemctl is-active simcard-dns-tgbot 2>/dev/null || echo "unknown")
+        echo -e "simcard-dns-tgbot: $([[ "$tg_status" == active ]] && echo "${GREEN}running${NC}" || echo "${RED}$tg_status${NC}")"
     fi
     echo ""
     if [[ -f "${CONF_DIR}/.domain" ]]; then

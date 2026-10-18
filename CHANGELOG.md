@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **改名 simcard-dns**：路径、命令、服务全部改用新名称：`/opt/simcard-dns`、`/etc/simcard-dns`、`/var/lib/simcard-dns`，管理命令 `simcard-dns`（另装 `/usr/local/bin/simcard-dns`，可直接 `sudo simcard-dns --status`），systemd 单元与辅助脚本 `simcard-dns-*`，iOS 描述文件标识 `com.simcard-dns.*`（iPhone 需删除旧描述文件后重装）。从 5GPN-X 升级的主机在第一次 `--upgrade`（或一行安装命令）时自动迁移：先完整打包旧文件，再搬目录、改单元名与启用状态、certbot 钩子和项目文件中的路径，失败整包还原；已签发的 `5gpn-wildcard` 通配符证书继续沿用。
 - **地区限制（可选）**：新增 `--geo-allow on|off|update|status`（仅 managed nftables 防火墙），让 SSH、DoT 853 和 iOS 描述文件 8111 只接受香港、澳门、台湾的 IPv4/IPv6 地址与客户端网段连入。网段取自 APNIC 分配数据，校验 MD5、记录数，并拒绝缩水一半以上的新名单；systemd timer 每天更新，失败保留旧名单。规则放在独立的 `/etc/5gpn/geo-allow.nft`（集合 + `geo_gate` 链），`/etc/nftables.conf` 只就地加入 include 与 `jump geo_gate`，开关和更新只重载这个文件。开启前检查当前 SSH 与已登录会话的来源，防止把自己锁在外面。修改客户端网段会同步更新放行集合；升级会重新生成该文件并纳入回滚快照；卸载会移除 include、jump 与 timer。Telegram Bot 主菜单新增「🌏 港澳台连接 · 已开启/已关闭」按钮，进入后显示限制端口、名单日期与拦截数，可开启（需确认）、关闭或更新名单；「🛡 白名单」页显示状态并提供同一入口。
 - **DoT 入口守门 `dot-gate`**：公网 853 改由守门服务接管，只把 SNI 等于当前 DoT 域名的 TLS 连接原样转给 mosdns（mosdns 改为只监听 `127.0.0.1:8853`）；旧域名、其他名字和不带 SNI 的扫描连接直接断开，域名变更后约 2 秒内切断仍使用旧名字的已建立连接，重置域名真正立即生效。客户端网段判断移到守门服务（网段内以 `127.0.0.2`、网段外以 `127.0.0.3` 连接 mosdns）。升级会自动启用该服务，升级失败回滚时会先停止它以归还 853。Bot 状态页显示「DNS 入口守门」。
 - **Cloudflare 一键重置域名**：新增 `--setup-cloudflare`（Token 隐藏输入，自动识别区域并签发 `*.dns.<zone>` 通配符证书，DNS-01 自动续期）与 `--reset-domain`（生成 20 位随机子域名、通过 Cloudflare 添加仅 DNS 的解析、切换 DoT、只删除旧域名指向本机的 A 记录，失败全量回滚）。续期 Hook 与「续期证书」在通配符模式下按证书名续期；手动更改域名会退出通配符模式。Bot「域名 DNS 管理」显示 Cloudflare 接入状态，接入后「更改域名」变为「🔄 重置域名」（需确认，完成后给出新域名与 iOS 二维码入口）。主菜单「5GPN 管理」改名为「域名 DNS 管理」。

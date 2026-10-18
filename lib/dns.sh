@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 5GPN-X module: dns
+# simcard-dns module: dns
 # Extracted verbatim from install.sh (original formatting preserved).
 # Sourced by install.sh; not meant to run standalone.
 # shellcheck shell=bash
@@ -180,9 +180,9 @@ configure_overseas_dns() { configure_dns_upstreams; }
 write_quic_dns_file() {
     local value="${1:-}"
     [[ -n "$value" ]] || return 1
-    local dir=/var/lib/5gpn-quic path=/var/lib/5gpn-quic/remote-dns tmp
+    local dir=/var/lib/simcard-dns-quic path=/var/lib/simcard-dns-quic/remote-dns tmp
     # Keep the non-secret resolver snapshot in a dedicated readable directory;
-    # do not relax /etc/5gpn permissions, which also contains exit credentials.
+    # do not relax /etc/simcard-dns permissions, which also contains exit credentials.
     install -d -o root -g root -m 0755 "$dir" || return 1
     path="$dir/remote-dns"
     tmp="$(mktemp "$dir/.remote-dns.XXXXXX")" || return 1
@@ -213,7 +213,7 @@ set_custom_dns() {
         /etc/mosdns/.overseas_private_dns \
         /etc/mosdns/.overseas_public_dns \
         /etc/mosdns/.sniproxy_dns \
-            /var/lib/5gpn-quic/remote-dns; do
+            /var/lib/simcard-dns-quic/remote-dns; do
         [[ -f "$f" ]] && cp -a "$f" "${backup_dir}/${f//\//__}"
     done
     if [[ -f /etc/sniproxy.conf ]]; then
@@ -236,7 +236,7 @@ set_custom_dns() {
             /etc/mosdns/.overseas_private_dns \
             /etc/mosdns/.overseas_public_dns \
             /etc/mosdns/.sniproxy_dns \
-            /var/lib/5gpn-quic/remote-dns; do
+            /var/lib/simcard-dns-quic/remote-dns; do
             b="${backup_dir}/${f//\//__}"
             if [[ -f "$b" ]]; then
                 cp -a "$b" "$f"
@@ -371,12 +371,12 @@ set_client_cidrs() {
 }
 
 # ---- Client allowlist by ASN ----------------------------------------------
-# Each allowed ASN is stored as /etc/5gpn/client-asns/AS<n>.txt (first line
+# Each allowed ASN is stored as /etc/simcard-dns/client-asns/AS<n>.txt (first line
 # "# <holder>", then its announced IPv4 prefixes). The effective client list
 # stays in CLIENT_CIDRS_FILE: adding an ASN unions its prefixes in, deleting
 # one subtracts them again while keeping every other ASN and any CIDRs that
 # were set by hand. Prefixes come from RIPEstat (public BGP data).
-CLIENT_ASN_DIR="${PGW_CLIENT_ASN_DIR:-/etc/5gpn/client-asns}"
+CLIENT_ASN_DIR="${PGW_CLIENT_ASN_DIR:-/etc/simcard-dns/client-asns}"
 CTMO_ASN="AS136167"
 
 client_asn_tool() {

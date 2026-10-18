@@ -81,7 +81,7 @@ render 2>/dev/null && fail "renderer must refuse halves that collapse to 0.0.0.0
 # --- CLI wiring ----------------------------------------------------------------
 grep -qF -- '--set-client-cidrs)' "${root}/install.sh" || fail "--set-client-cidrs must be dispatched"
 grep -qF 'apply_pgw_exit_rules' "${root}/install.sh" || fail "--upgrade must regenerate the egress table (self-loop guard)"
-grep -qF '/etc/5gpn/pgw-exit.nft' "${root}/install.sh" || fail "--upgrade must snapshot pgw-exit.nft for rollback"
+grep -qF '/etc/simcard-dns/pgw-exit.nft' "${root}/install.sh" || fail "--upgrade must snapshot pgw-exit.nft for rollback"
 grep -qF '.client_cidrs config.yaml.template' "${root}/lib/update-rules.sh" \
     || fail "staged renders must see the stored client list"
 

@@ -22,7 +22,7 @@ def alive(pid):
 
 class RunTimeoutTest(unittest.TestCase):
     def test_timeout_kills_grandchildren(self):
-        # 5gpn-ctl --add-exit spawns curl; a Bot timeout used to kill only the
+        # simcard-dns --add-exit spawns curl; a Bot timeout used to kill only the
         # outer bash and leave the download running as an orphan.
         with tempfile.TemporaryDirectory() as d:
             pidfile = Path(d) / "child.pid"
@@ -41,7 +41,7 @@ class RunTimeoutTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(out, "hello\n")
         self.assertIn("[exit code 3]", bot.run(["bash", "-c", "exit 3"], timeout=5))
-        self.assertIn("command not found", bot.run(["/nonexistent-5gpn-cmd"], timeout=5))
+        self.assertIn("command not found", bot.run(["/nonexistent-simcard-dns-cmd"], timeout=5))
 
 
 if __name__ == "__main__":

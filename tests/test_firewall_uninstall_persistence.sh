@@ -34,14 +34,14 @@ export PATH="${tmp}/bin:${PATH}"
 # P2: auto-mode persistence
 # =============================================================================
 auto_script="${tmp}/fw-allow.sh"
-auto_unit="${tmp}/5gpn-firewall-allow.service"
+auto_unit="${tmp}/simcard-dns-firewall-allow.service"
 PGW_AUTO_ALLOW_SCRIPT="${auto_script}" PGW_AUTO_ALLOW_UNIT="${auto_unit}" \
     write_auto_allow_persistence "2222,10022" "103.143.92.0/23"
 
 [[ -f "${auto_script}" ]] || fail "auto mode must write a persistent replay script"
 [[ -x "${auto_script}" ]] || fail "auto persistence script must be executable"
 [[ -f "${auto_unit}" ]] || fail "auto mode must install a boot-time oneshot unit"
-grep -q '5gpn-auto' "${auto_script}" || fail "auto replay rules must carry the project tag"
+grep -q 'simcard-dns-auto' "${auto_script}" || fail "auto replay rules must carry the project tag"
 grep -q '2222,10022,853,8111' "${auto_script}" || fail "auto replay must keep the detected SSH ports and service ports"
 grep -q '103.143.92.0/23' "${auto_script}" || fail "auto replay must whitelist the client network"
 ! grep -qE 'dport 53|--dport 53' "${auto_script}" || fail "auto replay must not open unused inbound port 53"
@@ -62,7 +62,7 @@ cat > "${nft_conf}" <<'EOF'
 #!/usr/sbin/nft -f
 flush ruleset
 table inet filter { chain input { type filter hook input priority 0; policy drop; } }
-include "/etc/5gpn/pgw-exit.nft"
+include "/etc/simcard-dns/pgw-exit.nft"
 EOF
 printf '#!/usr/sbin/nft -f\nflush ruleset\n# pristine user ruleset\n' > "${nft_conf}.pgw-backup"
 PGW_NFT_CONF="${nft_conf}" PGW_IPT_RULES="${tmp}/none" \
@@ -79,13 +79,13 @@ cat > "${nft_conf2}" <<'EOF'
 #!/usr/sbin/nft -f
 flush ruleset
 table inet filter { chain input { type filter hook input priority 0; policy drop; } }
-include "/etc/5gpn/pgw-exit.nft"
+include "/etc/simcard-dns/pgw-exit.nft"
 EOF
 PGW_NFT_CONF="${nft_conf2}" PGW_IPT_RULES="${tmp}/none" \
     PGW_FW_MARK="${tmp}/marker" \
     PGW_AUTO_ALLOW_SCRIPT="${tmp}/gone2" PGW_AUTO_ALLOW_UNIT="${tmp}/gone2.unit" \
     firewall_cleanup_on_uninstall
-grep -q 'include "/etc/5gpn/pgw-exit.nft"' "${nft_conf2}" && fail "uninstall must strip the dangling pgw-exit include"
+grep -q 'include "/etc/simcard-dns/pgw-exit.nft"' "${nft_conf2}" && fail "uninstall must strip the dangling pgw-exit include"
 grep -q 'table inet filter' "${nft_conf2}" || fail "uninstall must keep the rest of the user ruleset when stripping the include"
 
 # case C: iptables backup restore

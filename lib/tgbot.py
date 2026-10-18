@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-5gpn Telegram control bot.
+simcard-dns Telegram control bot.
 
-Stdlib-only (urllib) long-polling bot that drives the 5gpn management
+Stdlib-only (urllib) long-polling bot that drives the simcard-dns management
 commands and systemd services from Telegram, using inline-keyboard buttons.
 
 Security model:
@@ -56,7 +56,7 @@ def _parse_admin_ids(raw):
 
 
 ADMIN_IDS = _parse_admin_ids(os.environ.get("TG_ADMIN_IDS", ""))
-MGMT = os.environ.get("MGMT", "/opt/5gpn/bin/5gpn-ctl")
+MGMT = os.environ.get("MGMT", "/opt/simcard-dns/bin/simcard-dns")
 API = "https://api.telegram.org/bot%s/" % TOKEN
 
 # Services the bot may tail. Order matters for display only.
@@ -65,15 +65,15 @@ SERVICES = [
     "sniproxy",
     "wa-shim",
     "quic-proxy",
-    "5gpn-ios-profile",
-    "5gpn-tgbot",
+    "simcard-dns-ios-profile",
+    "simcard-dns-tgbot",
 ]
 RESTART_SERVICES = [
     "mosdns",
     "sniproxy",
     "wa-shim",
     "quic-proxy",
-    "5gpn-ios-profile.socket",
+    "simcard-dns-ios-profile.socket",
 ]
 EXIT_NAME_RE = re.compile(r"^(local|[\w\-\u4e00-\u9fff]{1,16})$", re.UNICODE)
 EXIT_ADD_NAME_RE = re.compile(r"^[\w\-\u4e00-\u9fff]{1,16}$", re.UNICODE)  # 'local' is reserved
@@ -83,7 +83,7 @@ DNS_LIST_RE = re.compile(r"^[0-9A-Fa-f:.\[\],\s]+$")
 # IP[:53] upstreams. Reject schemes here instead of accepting values that
 # would later be rejected or silently interpreted differently by the CLI.
 DNS_UPSTREAM_SCHEMES = set()
-WWW_DIR = "/opt/5gpn/www"
+WWW_DIR = "/opt/simcard-dns/www"
 
 # Per-chat conversational state for multi-step flows (e.g. add-exit).
 PENDING = {}
@@ -599,7 +599,7 @@ def _run_group(argv, timeout, inp=None):
     """Run argv in its own process group; on timeout kill the whole group.
 
     subprocess.run(timeout=...) only kills the direct child, so helpers it
-    spawned (e.g. a curl download under 5gpn-ctl) kept running as orphans
+    spawned (e.g. a curl download under simcard-dns) kept running as orphans
     and competed with the user's retry.
     """
     p = subprocess.Popen(argv, stdin=subprocess.PIPE if inp is not None else None,
@@ -698,8 +698,8 @@ STATUS_ITEMS = [
     ("dot-gate", "DNS 入口守门"),
     ("sniproxy", "sniproxy"),
     ("quic-proxy", "quic-proxy"),
-    ("5gpn-ios-profile.socket", "iOS 描述文件"),
-    ("5gpn-tgbot", "Telegram Bot"),
+    ("simcard-dns-ios-profile.socket", "iOS 描述文件"),
+    ("simcard-dns-tgbot", "Telegram Bot"),
 ]
 
 
@@ -788,7 +788,7 @@ def _established():
     return n
 
 
-MIHOMO_BIN = "/opt/5gpn/bin/mihomo"
+MIHOMO_BIN = "/opt/simcard-dns/bin/mihomo"
 TCP_TABLES = ("/proc/net/tcp", "/proc/net/tcp6")
 CLIENT_CIDRS_FILE = "/etc/mosdns/.client_cidrs"
 CLIENT_PORT_LABELS = {853: "DNS", 443: "代理", 80: "代理", 8111: "iOS", 22: "SSH"}
@@ -1046,14 +1046,14 @@ def op_status():
             down.append(label)
     lines.append("")
 
-    cur = _read_file("/opt/5gpn/etc/current-exit") or "local"
+    cur = _read_file("/opt/simcard-dns/etc/current-exit") or "local"
     if cur == "local":
         lines.append("🌐 出口：<b>local</b>（本机直出）")
     else:
-        t = _read_file("/etc/5gpn/exits/%s.type" % cur) or "?"
+        t = _read_file("/etc/simcard-dns/exits/%s.type" % cur) or "?"
         lines.append("🌐 出口：<b>%s</b>（%s）" % (html.escape(cur), html.escape(t)))
 
-    domain = _read_file("/etc/mosdns/.domain") or _read_file("/opt/5gpn/etc/.domain")
+    domain = _read_file("/etc/mosdns/.domain") or _read_file("/opt/simcard-dns/etc/.domain")
     if domain:
         lines.append("🔗 域名：<code>%s</code>" % html.escape(domain))
 
@@ -1093,7 +1093,7 @@ def op_set_exit(name):
         return "❌ <b>切换失败</b>\n%s" % html.escape(_reason(out))
     if name == "local":
         return "✅ 已切回 <b>local</b>（本机直出）"
-    t = _read_file("/etc/5gpn/exits/%s.type" % name) or "?"
+    t = _read_file("/etc/simcard-dns/exits/%s.type" % name) or "?"
     ip = _exit_ip()
     if ip:
         tail = "\n🌍 出口 IP：<code>%s</code>" % html.escape(ip)
@@ -1103,11 +1103,11 @@ def op_set_exit(name):
 
 
 def exits_overview_text():
-    cur = _read_file("/opt/5gpn/etc/current-exit") or "local"
+    cur = _read_file("/opt/simcard-dns/etc/current-exit") or "local"
     if cur == "local":
         desc = "本机直出"
     else:
-        desc = _read_file("/etc/5gpn/exits/%s.type" % cur) or "?"
+        desc = _read_file("/etc/simcard-dns/exits/%s.type" % cur) or "?"
     ip = _exit_ip()
     if ip:
         ip_line = "🌍 出口 IP：<code>%s</code>" % html.escape(ip)
@@ -1410,9 +1410,9 @@ def op_update_rules():
     if cn:
         parts.append("• ChinaList：%s 域名" % cn.group(1))
     # Also refresh mihomo smart routing rule-sets (re-download remote rule-sets)
-    smart_active = _is_active("5gpn-mihomo@smart.service") == "active"
+    smart_active = _is_active("simcard-dns-mihomo@smart.service") == "active"
     if smart_active:
-        run2(["systemctl", "restart", "5gpn-mihomo@smart.service"], timeout=60)
+        run2(["systemctl", "restart", "simcard-dns-mihomo@smart.service"], timeout=60)
         parts.append("• 远程规则集已刷新（mihomo 重载）")
     return "\n".join(parts)
 
@@ -1455,7 +1455,7 @@ def _cert_status_line():
 
 
 def op_dot_status():
-    domain = _read_file("/etc/mosdns/.domain") or _read_file("/opt/5gpn/etc/.domain") or "未设置"
+    domain = _read_file("/etc/mosdns/.domain") or _read_file("/opt/simcard-dns/etc/.domain") or "未设置"
     remote_dns = (_read_file("/etc/mosdns/.remote_dns") or
                   _read_file("/etc/mosdns/.overseas_dns") or "?")
     local_dns = (_read_file("/etc/mosdns/.local_dns") or "?")
@@ -1465,7 +1465,7 @@ def op_dot_status():
     ]
     zone = cloudflare_zone()
     lines.append("Cloudflare：%s" % ("已接入（<code>%s</code>）" % html.escape(zone) if zone
-                                     else "未接入（服务器执行 <code>5gpn-ctl --setup-cloudflare</code>）"))
+                                     else "未接入（服务器执行 <code>simcard-dns --setup-cloudflare</code>）"))
     lines.extend([
         "国际 DNS：<code>%s</code>" % html.escape(remote_dns),
         "国内 DNS：<code>%s</code>" % html.escape(local_dns),
@@ -1611,7 +1611,7 @@ def op_logs(svc):
 # --------------------------------------------------------------------------- #
 # Smart-routing rules (the 'smart' exit)
 # --------------------------------------------------------------------------- #
-RULES_PATH = "/etc/5gpn/rules.conf"
+RULES_PATH = "/etc/simcard-dns/rules.conf"
 
 
 def _rule_entries():
@@ -1737,7 +1737,7 @@ def op_del_rule_button(index, token):
 # --------------------------------------------------------------------------- #
 # Category -> exit policy map
 # --------------------------------------------------------------------------- #
-POLICY_PATH = "/etc/5gpn/policy-map.conf"
+POLICY_PATH = "/etc/simcard-dns/policy-map.conf"
 
 
 def _policy_map():
@@ -1816,7 +1816,7 @@ def parse_exit_names():
     names = ["local"]
     seen = set()
     try:
-        for f in sorted(os.listdir("/etc/5gpn/exits")):
+        for f in sorted(os.listdir("/etc/simcard-dns/exits")):
             if f.endswith(".type"):
                 seen.add(f[: -len(".type")])
     except OSError:
@@ -1835,7 +1835,7 @@ def parse_exit_names():
 
 def op_ios_send(chat_id):
     """Send the iOS profile QR as an image (with the URL as caption)."""
-    domain = _read_file("/etc/mosdns/.domain") or _read_file("/opt/5gpn/etc/.domain")
+    domain = _read_file("/etc/mosdns/.domain") or _read_file("/opt/simcard-dns/etc/.domain")
     if domain:
         url = "http://%s:8111/ios-dot.mobileconfig" % domain
     else:
@@ -1865,7 +1865,7 @@ def op_ios_send_inline(cb, generation=None):
         return "无法识别原菜单，请发送 /menu 重试。"
     if generation is None:
         generation = _chat_generation(chat_id)
-    domain = _read_file("/etc/mosdns/.domain") or _read_file("/opt/5gpn/etc/.domain")
+    domain = _read_file("/etc/mosdns/.domain") or _read_file("/opt/simcard-dns/etc/.domain")
     url = ("http://%s:8111/ios-dot.mobileconfig" % domain if domain else
            _read_file(os.path.join(WWW_DIR, "ios-profile-url.txt")))
     if not url:
@@ -2042,7 +2042,7 @@ def op_del_asn(asn):
 # ---- regional allowlist (geo gate) -----------------------------------------
 GEO_COUNTRY_NAMES = {"HK": "香港", "MO": "澳门", "TW": "台湾"}
 GEO_ACTIONS = {"on": ("开启地区限制", 300), "off": ("关闭地区限制", 120), "update": ("更新地区名单", 300)}
-GEO_CONF_PATH = os.environ.get("PGW_GEO_CONF", "/etc/5gpn/geo-allow.conf")
+GEO_CONF_PATH = os.environ.get("PGW_GEO_CONF", "/etc/simcard-dns/geo-allow.conf")
 
 
 def geo_enabled():
@@ -2132,7 +2132,7 @@ def op_geo(action):
 
 
 def main_menu_text():
-    return "5GPN-X\n选择一个操作："
+    return "simcard-dns\n选择一个操作："
 
 
 def main_menu():
@@ -2266,7 +2266,7 @@ def exits_rename_menu():
     return rows
 
 
-CF_CONF_FILE = "/etc/5gpn/cloudflare.conf"
+CF_CONF_FILE = "/etc/simcard-dns/cloudflare.conf"
 
 
 def cloudflare_zone(path=CF_CONF_FILE):
@@ -2909,7 +2909,7 @@ def set_commands():
 
 # Persisted getUpdates offset so a restart resumes where it left off instead of
 # replaying (or being flooded by) every update that queued up during downtime.
-_STATE_PATH = os.environ.get("TG_STATE_FILE", "/var/lib/5gpn/tgbot-state.json")
+_STATE_PATH = os.environ.get("TG_STATE_FILE", "/var/lib/simcard-dns/tgbot-state.json")
 
 
 def _load_offset(strict=False):
@@ -3010,7 +3010,7 @@ def main():
               file=sys.stderr)
 
     set_commands()
-    print("5gpn tgbot started; admins=%s" % sorted(ADMIN_IDS), file=sys.stderr)
+    print("simcard-dns tgbot started; admins=%s" % sorted(ADMIN_IDS), file=sys.stderr)
     offset = _load_offset(strict=True)
     if offset is not None:
         print("resuming from persisted update offset %d" % offset, file=sys.stderr)

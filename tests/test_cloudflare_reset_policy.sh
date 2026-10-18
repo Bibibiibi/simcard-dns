@@ -67,7 +67,7 @@ state() { curl -s "${PGW_CF_API}/__state" | python3 -c 'import json,sys; print(j
 # --- environment and mocks ----------------------------------------------------
 CONF_DIR="${tmp}/conf"; mkdir -p "$CONF_DIR"
 CF_CREDENTIALS="${tmp}/cloudflare.ini"; CF_CONF="${tmp}/cloudflare.conf"
-CF_CERT_NAME="5gpn-wildcard"; CF_DOT_LABEL="dns"
+CF_CERT_NAME="simcard-dns-wildcard"; CF_DOT_LABEL="dns"
 MOSDNS_DIR="${tmp}/mosdns"; mkdir -p "$MOSDNS_DIR"
 LE_LIVE_DIR="${tmp}/live"; LE_DEPLOY_HOOK_DIR="${tmp}/hooks"; LIB_DIR="${root}/lib"
 echo "c6p1old.example.net" > "${CONF_DIR}/.domain"; echo "203.0.113.10" > "${MOSDNS_DIR}/.public_ip"
@@ -76,8 +76,8 @@ export PYTHONPATH="${tmp}/py"
 cat > "${tmp}/bin/certbot" <<MOCK
 #!/bin/bash
 echo "\$*" >> "${tmp}/certbot.log"
-mkdir -p "${LE_LIVE_DIR}/5gpn-wildcard"
-echo cert > "${LE_LIVE_DIR}/5gpn-wildcard/fullchain.pem"; echo key > "${LE_LIVE_DIR}/5gpn-wildcard/privkey.pem"
+mkdir -p "${LE_LIVE_DIR}/simcard-dns-wildcard"
+echo cert > "${LE_LIVE_DIR}/simcard-dns-wildcard/fullchain.pem"; echo key > "${LE_LIVE_DIR}/simcard-dns-wildcard/privkey.pem"
 MOCK
 printf '#!/bin/bash\necho "$*" >> "%s/updater.log"\n[[ ! -f "%s/updater.fail" ]]\n' "$tmp" "$tmp" > "${tmp}/updater"
 chmod +x "${tmp}/bin/certbot" "${tmp}/updater"
@@ -102,7 +102,7 @@ out="$(reset_dot_domain)"
 new="$(sed -n 's/^NEW_DOMAIN=//p' <<< "$out")"
 [[ "$new" =~ ^[a-z0-9]{20}\.dns\.example\.net$ ]] || fail "new domain must be a random 20-char label: $new"
 [[ "$(cat "${CONF_DIR}/.domain")" == "$new" && "$(cat "${MOSDNS_DIR}/.domain")" == "$new" ]] || fail "DoT domain must switch"
-[[ "$(cat "${CONF_DIR}/.cert_lineage")" == 5gpn-wildcard ]] || fail "wildcard lineage must be recorded for renewals"
+[[ "$(cat "${CONF_DIR}/.cert_lineage")" == simcard-dns-wildcard ]] || fail "wildcard lineage must be recorded for renewals"
 [[ "$(cat "${MOSDNS_DIR}/certs/fullchain.pem")" == cert ]] || fail "wildcard certificate must be installed for mosdns"
 grep -qx -- '--offline' "${tmp}/updater.log" || fail "mosdns must be reloaded"
 state | python3 -c '
