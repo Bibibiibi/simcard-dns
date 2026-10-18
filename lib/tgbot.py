@@ -1951,11 +1951,7 @@ def allowlist_view(notice=""):
     rows = [[{"text": "🗑 删除 %s %s" % (asn, _short_button_text(holder, 24)),
               "callback_data": "asndel:%s" % asn}] for asn, holder, _ in asns]
     rows.append([{"text": "➕ 添加 ASN", "callback_data": "asn:add"}])
-    if geo and geo.get("state") == "on":
-        rows.append([{"text": "🌏 关闭地区限制", "callback_data": "geo:off"},
-                     {"text": "🔄 更新地区名单", "callback_data": "geo:update"}])
-    elif geo:
-        rows.append([{"text": "🌏 开启地区限制", "callback_data": "geo:on"}])
+    rows.append([{"text": "🌏 港澳台连接", "callback_data": "menu:geo"}])
     rows.append([{"text": "« 返回", "callback_data": "menu:main"}])
     return "\n".join(lines), rows
 
@@ -2006,6 +2002,17 @@ def op_del_asn(asn):
 # ---- regional allowlist (geo gate) -----------------------------------------
 GEO_COUNTRY_NAMES = {"HK": "香港", "MO": "澳门", "TW": "台湾"}
 GEO_ACTIONS = {"on": ("开启地区限制", 300), "off": ("关闭地区限制", 120), "update": ("更新地区名单", 300)}
+GEO_CONF_PATH = os.environ.get("PGW_GEO_CONF", "/etc/5gpn/geo-allow.conf")
+
+
+def geo_enabled():
+    """Cheap on/off read for the main menu label (no subprocess)."""
+    try:
+        with open(GEO_CONF_PATH, encoding="utf-8") as handle:
+            values = [line.strip()[len("GEO_ALLOW="):] for line in handle if line.startswith("GEO_ALLOW=")]
+    except OSError:
+        return False
+    return bool(values) and values[-1] == "on"
 
 
 def geo_status():
@@ -2046,7 +2053,35 @@ def geo_confirm_on():
             "⚠️ 你在其他地区（例如内地、日本）用当地网络时将无法 SSH 登录；手机连当地 Wi‑Fi 时私人 DNS 也会连不上"
             "（用白名单运营商的流量漫游不受影响）。被挡在外面时，可以在这里关闭，或使用 VPS 商的网页控制台。",
             [[{"text": "✅ 确认开启", "callback_data": "geook:on"},
-              {"text": "« 返回", "callback_data": "menu:allow"}]])
+              {"text": "« 返回", "callback_data": "menu:geo"}]])
+
+
+def geo_view(notice=""):
+    geo = geo_status()
+    on = bool(geo) and geo.get("state") == "on"
+    lines = ([notice, ""] if notice else []) + ["<b>🌏 港澳台连接</b>", geo_summary(geo)]
+    if on:
+        lines += ["", "关闭后，这些端口恢复对所有地区开放。"]
+    rows = []
+    if on:
+        rows.append([{"text": "🔓 关闭", "callback_data": "geo:off"},
+                     {"text": "🔄 更新名单", "callback_data": "geo:update"}])
+    elif geo:
+        rows.append([{"text": "🔒 开启", "callback_data": "geo:on"}])
+    rows.append([{"text": "« 返回", "callback_data": "menu:main"}])
+    return "\n".join(lines), rows
+
+
+def geo_async(cb, action=None):
+    """Optionally run action() (returns a notice), then show the geo card."""
+    view = {}
+
+    def text_fn():
+        notice = action() if action else ""
+        text, view["kb"] = geo_view(notice)
+        return text
+
+    edit_async(cb, text_fn, keyboard_fn=lambda: view.get("kb"))
 
 
 def op_geo(action):
@@ -2068,7 +2103,8 @@ def main_menu():
          {"text": "🛠️ 域名 DNS 管理", "callback_data": "menu:dot"}],
         [{"text": "👥 连入 IP", "callback_data": "act:clients"},
          {"text": "🛡 白名单", "callback_data": "menu:allow"}],
-        [{"text": "📱 iOS 二维码", "callback_data": "act:ios"}],
+        [{"text": "📱 iOS 二维码", "callback_data": "act:ios"},
+         {"text": "🌏 港澳台连接 · %s" % ("已开启" if geo_enabled() else "已关闭"), "callback_data": "menu:geo"}],
     ]
 
 
@@ -2500,12 +2536,15 @@ def handle_callback(cb):
         asn = parse_asn(data[9:])
         edit(cb, "⏳ 正在删除 <b>%s</b>，更新 DNS 和防火墙…" % asn)
         allowlist_async(cb, lambda: op_del_asn(asn))
+    elif data == "menu:geo":
+        edit(cb, "⏳ 正在读取港澳台连接状态…")
+        geo_async(cb)
     elif data == "geo:on":
         edit(cb, *geo_confirm_on())
     elif data in ("geook:on", "geo:off", "geo:update"):
         action = data.split(":", 1)[1] if data != "geook:on" else "on"
         edit(cb, "⏳ 正在%s…" % GEO_ACTIONS[action][0])
-        allowlist_async(cb, lambda: op_geo(action))
+        geo_async(cb, lambda: op_geo(action))
     elif data == "cancel:dot":
         PENDING.pop(chat_id, None)
         edit(cb, op_dot_status(), dot_menu())

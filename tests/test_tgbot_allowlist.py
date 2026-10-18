@@ -43,28 +43,45 @@ class AllowlistTest(unittest.TestCase):
         self.assertIn("地区限制：<b>未开启</b>", text)
         self.assertIn("香港、澳门、台湾", text)
         data = [b["callback_data"] for row in kb for b in row]
-        self.assertEqual(data, ["asndel:AS136167", "asndel:AS63527", "asn:add", "geo:on", "menu:main"])
+        self.assertEqual(data, ["asndel:AS136167", "asndel:AS63527", "asn:add", "menu:geo", "menu:main"])
 
-    def test_view_shows_active_geo_gate(self):
-        self.fake({"--list-client-asns": (True, "AS136167\tCTMO\t6\n"), "--geo-allow": (True, self.GEO_ON)})
-        text, kb = bot.allowlist_view()
+    def test_geo_card_when_on(self):
+        self.fake({"--geo-allow": (True, self.GEO_ON)})
+        text, kb = bot.geo_view()
+        self.assertIn("<b>🌏 港澳台连接</b>", text)
         self.assertIn("地区限制：<b>已开启</b>（生效中）", text)
         self.assertIn("端口 22/853/8111", text)
         self.assertIn("名单日期 2026-10-18：IPv4 4321 段、IPv6 987 段；已拦截 42 个连接包", text)
         data = [b["callback_data"] for row in kb for b in row]
-        self.assertEqual(data, ["asndel:AS136167", "asn:add", "geo:off", "geo:update", "menu:main"])
-        self.assertIn(["--geo-allow", "status"], self.calls)
+        self.assertEqual(data, ["geo:off", "geo:update", "menu:main"])
+        self.assertEqual(self.calls, [["--geo-allow", "status"]])
 
-    def test_view_flags_inactive_gate_and_unreadable_status(self):
-        self.fake({"--list-client-asns": (True, ""), "--geo-allow": (True, self.GEO_ON.replace("active\tyes", "active\tno"))})
-        text, _ = bot.allowlist_view()
-        self.assertIn("防火墙里没有生效", text)
-        self.fake({"--list-client-asns": (True, ""), "--geo-allow": (False, "boom")})
-        text, kb = bot.allowlist_view()
+    def test_geo_card_when_off_inactive_or_unreadable(self):
+        self.fake({"--geo-allow": (True, self.GEO_OFF)})
+        text, kb = bot.geo_view()
+        self.assertIn("SSH、DoT 853 和 iOS 描述文件 8111", text)
+        self.assertEqual([b["callback_data"] for row in kb for b in row], ["geo:on", "menu:main"])
+        self.fake({"--geo-allow": (True, self.GEO_ON.replace("active\tyes", "active\tno"))})
+        self.assertIn("防火墙里没有生效", bot.geo_view()[0])
+        self.fake({"--geo-allow": (False, "boom")})
+        text, kb = bot.geo_view()
         self.assertIn("地区限制：读取状态失败", text)
-        data = [b["callback_data"] for row in kb for b in row]
-        self.assertNotIn("geo:on", data)
-        self.assertNotIn("geo:off", data)
+        self.assertEqual([b["callback_data"] for row in kb for b in row], ["menu:main"])
+
+    def test_main_menu_geo_button_shows_state(self):
+        import tempfile, os
+        with tempfile.TemporaryDirectory() as d:
+            conf = os.path.join(d, "geo-allow.conf")
+            self.addCleanup(setattr, bot, "GEO_CONF_PATH", bot.GEO_CONF_PATH)
+            bot.GEO_CONF_PATH = conf
+            label = lambda: [b for row in bot.main_menu() for b in row if b["callback_data"] == "menu:geo"][0]["text"]
+            self.assertEqual(label(), "🌏 港澳台连接 · 已关闭")
+            with open(conf, "w", encoding="utf-8") as fh:
+                fh.write("# x\nGEO_ALLOW=on\nGEO_PORTS=22,853,8111\n")
+            self.assertEqual(label(), "🌏 港澳台连接 · 已开启")
+            with open(conf, "a", encoding="utf-8") as fh:
+                fh.write("GEO_ALLOW=off\n")
+            self.assertEqual(label(), "🌏 港澳台连接 · 已关闭")
 
     def test_geo_confirm_and_actions_call_the_cli(self):
         text, kb = bot.geo_confirm_on()
@@ -103,6 +120,7 @@ class AllowlistTest(unittest.TestCase):
         data = [b["callback_data"] for row in bot.main_menu() for b in row]
         self.assertIn("menu:allow", data)
         self.assertIn("act:clients", data)
+        self.assertIn("menu:geo", data)
 
 
 class GeoFlowTest(unittest.TestCase):
@@ -127,7 +145,7 @@ class GeoFlowTest(unittest.TestCase):
             self.calls.append(argv[2:])
             if argv[2] == "--geo-allow" and argv[3] == "status":
                 return True, AllowlistTest.GEO_ON
-            return True, "AS136167\tCTMO\t6\n" if argv[2] == "--list-client-asns" else ""
+            return True, ""
 
         bot.tg, bot.run2 = tg, run2
 
@@ -136,6 +154,12 @@ class GeoFlowTest(unittest.TestCase):
                              "message": {"chat": {"id": 9}, "message_id": 300}})
         return self.sent[-1]
 
+    def test_main_menu_button_opens_geo_card(self):
+        card = self.cb("menu:geo")
+        self.assertIn("港澳台连接", card["text"])
+        self.assertIn("端口 22/853/8111", card["text"])
+        self.assertEqual(self.calls, [["--geo-allow", "status"]])
+
     def test_on_needs_confirmation_then_runs(self):
         shown = self.cb("geo:on")
         self.assertIn("确认开启地区限制", shown["text"])
@@ -143,7 +167,8 @@ class GeoFlowTest(unittest.TestCase):
         done = self.cb("geook:on")
         self.assertIn(["--geo-allow", "on"], self.calls)
         self.assertIn("已开启地区限制", done["text"])
-        self.assertIn("地区限制：<b>已开启</b>", done["text"])
+        self.assertIn("<b>🌏 港澳台连接</b>", done["text"])
+        self.assertIn(["--geo-allow", "status"], self.calls)
 
     def test_off_and_update_run_directly(self):
         self.cb("geo:off")
