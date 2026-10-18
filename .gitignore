@@ -4,3 +4,4 @@ __pycache__/
 *.zip
 .ruff_cache/
 /key
+/CLAUDE.local.md
