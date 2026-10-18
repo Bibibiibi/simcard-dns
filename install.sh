@@ -22,6 +22,7 @@ IOS_PROFILE_PORT=8111
 EXIT_USER="pxout"
 EXIT_MARK="0x1"
 EXIT_TABLE="100"
+EXIT_RULE_PRIO="32765"
 WG_DIR="/etc/wireguard"
 EXITS_DIR="/etc/simcard-dns/exits"
 RULES_FILE="/etc/simcard-dns/rules.conf"
@@ -534,7 +535,7 @@ upgrade_code() (
         /etc/mosdns/override-direct.txt /etc/mosdns/override-proxy.txt /etc/mosdns/override-block.txt
         /etc/mosdns/rule-domains.txt /etc/mosdns/rule-block.txt /etc/mosdns/rule-domain-cache
         /var/lib/simcard-dns-quic/remote-dns /usr/local/bin/update-mosdns-rules.sh /usr/local/bin/mosdns
-        /usr/local/bin/simcard-dns
+        /usr/local/bin/simcard-dns /usr/local/bin/simcard-dns-apply-exit.sh
         /etc/systemd/system/quic-proxy.service /etc/systemd/system/simcard-dns-mihomo@.service
         /etc/systemd/system/dot-gate.service
         /etc/simcard-dns/pgw-exit.nft "$GEO_NFT"
@@ -622,6 +623,10 @@ upgrade_code() (
     # exclusion): regenerate and reload it so fixes reach upgraded hosts.
     upgrade_stage=egress-rules
     apply_pgw_exit_rules
+    # So is the apply-exit helper (the mihomo unit's ExecStartPost): regenerate
+    # it before the units restart below, so the restart runs the new one.
+    upgrade_stage=exit-helper
+    install_apply_exit_helper
     # Regional allowlist: re-render offline with the current generator.
     if [[ -f "$GEO_NFT" ]]; then
         upgrade_stage=geo-allow

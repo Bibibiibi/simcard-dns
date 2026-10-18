@@ -323,6 +323,29 @@ apply_current_exit() {
     /usr/local/bin/simcard-dns-apply-exit.sh
 }
 
+# Keep exactly one "from all fwmark <mark> lookup <table>" policy rule, at
+# <prio>. `ip rule add` never checks for an identical rule, so adding on every
+# apply used to stack one more copy per run; this also prunes copies left by
+# older versions. The kept rule is added before the extras are deleted, so
+# marked traffic never falls through to the main table in between.
+sync_exit_rule() {
+    local mark="$1" table="$2" prio="$3" p have=0
+    local -a prios=()
+    mapfile -t prios < <(ip rule show 2>/dev/null | awk -v m="$mark" -v t="$table" '
+        NF == 7 && $2 == "from" && $3 == "all" && $4 == "fwmark" && $5 == m && $6 == "lookup" && $7 == t {
+            sub(/:$/, "", $1); print $1
+        }')
+    for p in "${prios[@]}"; do [[ "$p" == "$prio" ]] && have=1; done
+    if [[ $have -eq 0 ]]; then
+        ip rule add fwmark "$mark" table "$table" priority "$prio" || return 1
+    fi
+    for p in "${prios[@]}"; do
+        # Keep the first copy already at the target priority.
+        if [[ "$p" == "$prio" && $have -eq 1 ]]; then have=2; continue; fi
+        ip rule del priority "$p" fwmark "$mark" table "$table" 2>/dev/null || true
+    done
+}
+
 install_apply_exit_helper() {
     cat > /usr/local/bin/simcard-dns-apply-exit.sh <<EOF
 #!/bin/bash
@@ -330,10 +353,12 @@ install_apply_exit_helper() {
 set -e
 MARK="${EXIT_MARK}"
 TABLE="${EXIT_TABLE}"
+PRIO="${EXIT_RULE_PRIO}"
 STATE="${CONF_DIR}/current-exit"
 EXITS_DIR="${EXITS_DIR}"
 WG_DIR="${WG_DIR}"
 EOF
+    declare -f sync_exit_rule >> /usr/local/bin/simcard-dns-apply-exit.sh
     cat >> /usr/local/bin/simcard-dns-apply-exit.sh <<'EOF'
 
 # Ensure the egress-marking nftables table exists; it may have been wiped by a
@@ -344,7 +369,7 @@ fi
 
 # Marked traffic consults the dedicated table; an empty table falls through to
 # the main table, i.e. direct egress ("local").
-ip rule add fwmark "${MARK}" table "${TABLE}" 2>/dev/null || true
+sync_exit_rule "${MARK}" "${TABLE}" "${PRIO}" || true
 
 exit_iface() {
     local name="$1"
@@ -749,7 +774,7 @@ set_exit() {
     [[ -z "$name" ]] && { err "Usage: $0 --set-exit <name|local>"; exit 1; }
     ensure_proxy_user
     [[ -x /usr/local/bin/simcard-dns-apply-exit.sh ]] || setup_exit_switching >/dev/null
-    ip rule add fwmark "${EXIT_MARK}" table "${EXIT_TABLE}" 2>/dev/null || true
+    sync_exit_rule "${EXIT_MARK}" "${EXIT_TABLE}" "${EXIT_RULE_PRIO}" || true
     local prev="local"
     [[ -f "${CONF_DIR}/current-exit" ]] && prev="$(cat "${CONF_DIR}/current-exit" 2>/dev/null || echo local)"
     if [[ "$name" == "local" ]]; then

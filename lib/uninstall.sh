@@ -9,7 +9,8 @@ do_uninstall() {
     read -r -p "Are you sure? [y/N]: " confirm
     [[ "$confirm" =~ ^[Yy]$ ]] || { info "Uninstall cancelled"; exit 0; }
     set_exit local 2>/dev/null || true
-    ip rule del fwmark "${EXIT_MARK}" table "${EXIT_TABLE}" 2>/dev/null || true
+    # Older versions stacked one copy per apply; remove them all.
+    while ip rule del fwmark "${EXIT_MARK}" table "${EXIT_TABLE}" 2>/dev/null; do :; done
     ip route flush table "${EXIT_TABLE}" 2>/dev/null || true
     shopt -s nullglob
     for f in "${WG_DIR}"/pgw-*.conf; do
