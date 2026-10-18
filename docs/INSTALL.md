@@ -9,8 +9,8 @@
 - 使用 Ubuntu 20.04+、Debian 11+、RHEL 8+ 或 Fedora 39+。
 - 架构为 `amd64` 或 `arm64`，内存至少 512 MB（推荐 1 GB 以上）。
 - 以 root 运行，并准备公网 IPv4。
-- 将一个域名的 A 记录指向服务器公网 IP；安装脚本会再次验证。
-- 检查端口：公网 TCP 853（DoT）、TCP 80（证书验证），需要时开放 TCP 8111（iOS 描述文件）；客户端网段（运营商出口网段，默认 CTMO）需要 TCP 80/443 和 UDP 443。默认 `FIREWALL_MODE=preserve`，脚本不会接管主机防火墙。
+- 准备托管在 Cloudflare 的域名与 API Token（权限：Zone → Zone → Read、Zone → DNS → Edit），以及 Telegram Bot Token 和管理员 ID（两者都是必填）。
+- 检查端口：公网 TCP 853（DoT），需要时开放 TCP 8111（iOS 描述文件）；使用自有域名（`DOMAIN`）时还需要 TCP 80（证书验证）；客户端网段（运营商出口网段，默认 CTMO）需要 TCP 80/443 和 UDP 443。默认 `FIREWALL_MODE=preserve`，脚本不会接管主机防火墙。
 
 ## 2. 首次安装
 
@@ -18,9 +18,16 @@
 curl -fsSL https://raw.githubusercontent.com/Bibibiibi/simcard-dns/main/install.sh | sudo bash
 ```
 
-按提示输入域名；证书邮箱可通过 `EMAIL` 设置。已有证书会复用，没有证书时才申请 Let's Encrypt 证书。
+安装开始时依次询问：Cloudflare API Token（不回显；能管理多个区域时让你选择）、Telegram Bot Token、管理员 Telegram ID。之后全自动：通过 Cloudflare DNS-01 签发 `*.dns.<区域>` 通配符证书（不需要 TCP 80），创建随机 DoT 域名 `<20 位随机>.dns.<区域>` 的 A 记录（仅 DNS），安装完成时显示该域名。证书邮箱可通过 `EMAIL` 设置。
 
-无交互环境请预先提供至少 `DOMAIN`（可选 `EMAIL`）：
+无交互环境请预先提供 `CF_API_TOKEN`、`TG_BOT_TOKEN`、`TG_ADMIN_IDS`（Token 管理多个区域时再加 `CF_ZONE`）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Bibibiibi/simcard-dns/main/install.sh | \
+  sudo env CF_API_TOKEN=<token> TG_BOT_TOKEN=<bot-token> TG_ADMIN_IDS=<你的 ID> bash
+```
+
+进阶：没有 Cloudflare 时设置 `DOMAIN` 改用自有域名（A 记录需先指向服务器，证书走 HTTP-01，需要 TCP 80）：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Bibibiibi/simcard-dns/main/install.sh | \

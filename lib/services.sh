@@ -625,41 +625,54 @@ read_tgbot_setting() {
     printf '%s' "$value"
 }
 
+# Telegram bot token + admin IDs. TG_BOT_REQUIRED=1 (fresh installs) keeps
+# asking until both are valid; otherwise an empty token skips the bot.
 collect_tgbot_settings() {
     local token="${TG_BOT_TOKEN-$(read_tgbot_setting TG_BOT_TOKEN)}"
     local ids="${TG_ADMIN_IDS-$(read_tgbot_setting TG_ADMIN_IDS)}"
-    if [[ -z "$token" ]]; then
-        if [[ -t 0 ]]; then
-            read -r -p "Telegram Bot Token（留空跳过）: " token
-        elif ( : < /dev/tty ) 2>/dev/null; then
-            read -r -p "Telegram Bot Token（留空跳过）: " token < /dev/tty
+    local required="${TG_BOT_REQUIRED:-0}" tty="" normalized invalid
+    if [[ -t 0 ]]; then
+        tty=/dev/stdin
+    elif ( : < /dev/tty ) 2>/dev/null; then
+        tty=/dev/tty
+    fi
+    while true; do
+        if [[ -z "$token" && -n "$tty" ]]; then
+            if [[ "$required" == 1 ]]; then
+                read -r -p "Telegram Bot Token（向 @BotFather 申请，必填）: " token < "$tty" || { err "No input for the Telegram Bot Token"; return 1; }
+            else
+                read -r -p "Telegram Bot Token（留空跳过）: " token < "$tty" || token=""
+            fi
         fi
-    fi
-    if [[ -z "$token" ]]; then
-        TG_BOT_TOKEN=""
-        TG_ADMIN_IDS=""
-        TG_BOT_SETTINGS_COLLECTED=1
-        return 0
-    fi
-    if [[ -z "$ids" ]]; then
-        if [[ -t 0 ]]; then
-            read -r -p "管理员 Telegram ID: " ids
-        elif ( : < /dev/tty ) 2>/dev/null; then
-            read -r -p "管理员 Telegram ID: " ids < /dev/tty
+        if [[ -z "$token" ]]; then
+            if [[ "$required" == 1 ]]; then
+                [[ -n "$tty" ]] || { err "Set TG_BOT_TOKEN and TG_ADMIN_IDS for non-interactive installs"; return 1; }
+                warn "Telegram Bot Token 为必填。"
+                continue
+            fi
+            TG_BOT_TOKEN=""
+            TG_ADMIN_IDS=""
+            TG_BOT_SETTINGS_COLLECTED=1
+            return 0
         fi
-    fi
-    local normalized invalid
-    normalized="$(printf '%s' "$ids" | tr ', ' '\n')"
-    invalid="$(printf '%s\n' "$normalized" | sed '/^$/d' | grep -Ev '^[0-9]+$' || true)"
-    if [[ -n "$invalid" ]]; then
-        err "Invalid Telegram admin ID; existing settings were not changed"
-        return 1
-    fi
-    ids="$(printf '%s\n' "$normalized" | sed '/^$/d' | paste -sd ',' -)"
-    if [[ ! "$token" =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]]; then
-        err "Invalid Telegram token format; existing settings were not changed"
-        return 1
-    fi
+        if [[ -z "$ids" && -n "$tty" ]]; then
+            read -r -p "管理员 Telegram ID（可向 @userinfobot 查询，多个用逗号分隔）: " ids < "$tty" || { err "No input for the Telegram admin ID"; return 1; }
+        fi
+        normalized="$(printf '%s' "$ids" | tr ', ' '\n')"
+        invalid="$(printf '%s\n' "$normalized" | sed '/^$/d' | grep -Ev '^[0-9]+$' || true)"
+        ids="$(printf '%s\n' "$normalized" | sed '/^$/d' | paste -sd ',' -)"
+        if [[ ! "$token" =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]]; then
+            err "Invalid Telegram token format; existing settings were not changed"
+            [[ "$required" == 1 && -n "$tty" ]] || return 1
+            token=""; continue
+        fi
+        if [[ -n "$invalid" || ( "$required" == 1 && -z "$ids" ) ]]; then
+            err "Invalid Telegram admin ID; existing settings were not changed"
+            [[ "$required" == 1 && -n "$tty" ]] || return 1
+            ids=""; continue
+        fi
+        break
+    done
     TG_BOT_TOKEN="$token"
     TG_ADMIN_IDS="$ids"
     TG_BOT_SETTINGS_COLLECTED=1

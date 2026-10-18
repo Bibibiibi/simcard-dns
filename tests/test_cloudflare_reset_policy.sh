@@ -10,7 +10,7 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 tmp="$(mktemp -d)"
 fail() { echo "$1" >&2; exit 1; }
 info() { :; }; warn() { :; }; ok() { :; }; err() { echo "$*" >&2; }
-for fn in cf_api cf_conf cf_configured cf_json issue_wildcard_cert setup_cloudflare apply_wildcard_dot_domain reset_dot_domain; do
+for fn in cf_api cf_conf cf_configured cf_json cf_random_label cf_create_a_record issue_wildcard_cert setup_cloudflare apply_wildcard_dot_domain reset_dot_domain; do
     eval "$(awk "/^${fn}\\(\\)/,/^}/" "${root}/lib/cert.sh")"
 done
 

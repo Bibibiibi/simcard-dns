@@ -405,6 +405,101 @@ issue_wildcard_cert() {
     ok "Wildcard certificate ready: *.${CF_DOT_LABEL}.${zone}"
 }
 
+# ---- Install-time Cloudflare setup -------------------------------------------
+# Fresh installs ask for a Cloudflare API token instead of a domain. The token
+# lists its zones, the wildcard certificate is issued over DNS-01 (no TCP/80),
+# and the DoT name is a random <label>.dns.<zone> with its own DNS-only record.
+cf_random_label() {
+    python3 -c 'import secrets,string; a=string.ascii_lowercase+string.digits; print("".join(secrets.choice(a) for _ in range(20)))'
+}
+cf_save_token() { # token -> CF_CREDENTIALS, mode 600 from birth
+    local tmp
+    mkdir -p "$(dirname "$CF_CREDENTIALS")" || return 1
+    tmp="$(mktemp "${CF_CREDENTIALS}.XXXXXX")" || return 1
+    chmod 600 "$tmp" && printf 'dns_cloudflare_api_token = %s\n' "$1" > "$tmp" && mv -f "$tmp" "$CF_CREDENTIALS"
+}
+cf_list_zones() { # "name<TAB>id" per zone the saved token can manage
+    cf_api GET "/zones?status=active&per_page=50" | cf_json '["%s\t%s" % (z["name"], z["id"]) for z in r]'
+}
+cf_create_a_record() { # name ip -> prints the new record id
+    cf_api POST "/zones/$(cf_conf zone_id)/dns_records" \
+        "{\"type\":\"A\",\"name\":\"$1\",\"content\":\"$2\",\"ttl\":60,\"proxied\":false,\"comment\":\"simcard-dns DoT\"}" \
+        | cf_json 'r["id"]'
+}
+# Ask for the token (CF_API_TOKEN, or typed without echo). Kept in memory only
+# until select_cloudflare_zone writes it to CF_CREDENTIALS.
+collect_cloudflare_token() {
+    CF_PENDING_TOKEN="${CF_API_TOKEN:-}"
+    while [[ -z "$CF_PENDING_TOKEN" ]]; do
+        [[ -t 0 ]] || { err "Set CF_API_TOKEN (Zone:Read + DNS:Edit) for non-interactive installs, or DOMAIN to use your own domain"; return 1; }
+        read -rsp "Cloudflare API Token（需要 Zone:Read 与 DNS:Edit 权限，输入时不显示）: " CF_PENDING_TOKEN; echo
+        if [[ -z "$CF_PENDING_TOKEN" || "$CF_PENDING_TOKEN" == *[[:space:]]* ]]; then
+            warn "Token 不能为空，也不能包含空格。"
+            CF_PENDING_TOKEN=""
+        fi
+    done
+}
+# Validate the token and choose the zone (CF_ZONE, the only zone, or a menu).
+# Sets CF_ZONE / CF_ZONE_ID and writes CF_CREDENTIALS + CF_CONF. Interactive
+# installs are asked for another token when this one is rejected.
+select_cloudflare_zone() {
+    local zones count i line name id choice
+    while true; do
+        [[ -n "${CF_PENDING_TOKEN:-}" ]] || collect_cloudflare_token || return 1
+        cf_save_token "$CF_PENDING_TOKEN" || return 1
+        if zones="$(cf_list_zones 2>&1)" && [[ -n "$zones" ]]; then
+            break
+        fi
+        rm -f "$CF_CREDENTIALS"
+        err "Cloudflare token rejected or it manages no zone: ${zones##*$'\n'}"
+        [[ -t 0 && -z "${CF_API_TOKEN:-}" ]] || return 1
+        CF_PENDING_TOKEN=""
+    done
+    unset CF_PENDING_TOKEN
+    count="$(printf '%s\n' "$zones" | wc -l | tr -d ' ')"
+    if [[ -n "${CF_ZONE:-}" ]]; then
+        line="$(printf '%s\n' "$zones" | awk -F'\t' -v z="$CF_ZONE" 'tolower($1) == tolower(z) { print; exit }')"
+        [[ -n "$line" ]] || { err "This token cannot manage zone ${CF_ZONE}"; return 1; }
+    elif (( count == 1 )); then
+        line="$zones"
+    else
+        [[ -t 0 ]] || { err "The token manages ${count} zones; set CF_ZONE to choose one"; return 1; }
+        info "这个 Token 可以管理多个区域："
+        i=0
+        while IFS=$'\t' read -r name id; do
+            i=$((i + 1)); printf '  %d) %s\n' "$i" "$name"
+        done <<< "$zones"
+        while true; do
+            read -r -p "选择用于 DoT 的区域 [1-${count}]: " choice
+            [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= count )) && break
+            warn "请输入 1 到 ${count} 之间的数字。"
+        done
+        line="$(printf '%s\n' "$zones" | sed -n "${choice}p")"
+    fi
+    CF_ZONE="${line%%$'\t'*}"; CF_ZONE_ID="${line#*$'\t'}"
+    printf 'zone=%s\nzone_id=%s\n' "$CF_ZONE" "$CF_ZONE_ID" > "$CF_CONF" && chmod 600 "$CF_CONF"
+    ok "Cloudflare 区域：${CF_ZONE}"
+}
+# Install stage: wildcard certificate, the DoT name's A record, certificate
+# files for mosdns and the domain markers. DOMAIN is chosen by the caller.
+install_cloudflare_cert() {
+    local live
+    ensure_mosdns_user
+    issue_wildcard_cert || return 1
+    cf_create_a_record "$DOMAIN" "$PUBLIC_IP" >/dev/null || { err "Could not create the A record for ${DOMAIN}"; return 1; }
+    info "A record created: ${DOMAIN} -> ${PUBLIC_IP} (DNS only)"
+    live="${LE_LIVE_DIR}/${CF_CERT_NAME}"
+    mkdir -p "${MOSDNS_DIR}/certs" "$CONF_DIR"
+    cp "${live}/fullchain.pem" "${MOSDNS_DIR}/certs/fullchain.pem" || return 1
+    cp "${live}/privkey.pem" "${MOSDNS_DIR}/certs/privkey.pem" || return 1
+    chown -R mosdns:mosdns "${MOSDNS_DIR}/certs/" 2>/dev/null || true
+    chmod 600 "${MOSDNS_DIR}"/certs/*.pem
+    echo "$DOMAIN" > "${CONF_DIR}/.domain"
+    echo "$CF_CERT_NAME" > "${CONF_DIR}/.cert_lineage"
+    rm -f "${CONF_DIR}/.cert_basename"
+    ok "证书已就绪：*.${CF_DOT_LABEL}.$(cf_conf zone)"
+}
+
 # Connect a Cloudflare API token (Zone -> DNS -> Edit on the DoT zone). The
 # token is read from CF_API_TOKEN or typed without echo; never pass it as an
 # argument (it would land in shell history and process listings).
@@ -494,14 +589,12 @@ reset_dot_domain() {
     if [[ ! -s "${LE_LIVE_DIR}/${CF_CERT_NAME}/fullchain.pem" ]]; then
         issue_wildcard_cert || exit 1
     fi
-    label="$(python3 -c 'import secrets,string; a=string.ascii_lowercase+string.digits; print("".join(secrets.choice(a) for _ in range(20)))')"
+    label="$(cf_random_label)"
     new="${label}.${CF_DOT_LABEL}.${zone}"
     ip="$(cat "${MOSDNS_DIR}/.public_ip" 2>/dev/null || true)"
     [[ -n "$ip" ]] || { get_public_ip; ip="$PUBLIC_IP"; }
     old="$(cat "${CONF_DIR}/.domain" 2>/dev/null || true)"
-    new_id="$(cf_api POST "/zones/${zone_id}/dns_records" \
-        "{\"type\":\"A\",\"name\":\"${new}\",\"content\":\"${ip}\",\"ttl\":60,\"proxied\":false,\"comment\":\"simcard-dns-x DoT\"}" \
-        | cf_json 'r["id"]')" || { err "Could not create the DNS record"; exit 1; }
+    new_id="$(cf_create_a_record "$new" "$ip")" || { err "Could not create the DNS record"; exit 1; }
     info "A record created: ${new} -> ${ip}; waiting until it resolves..."
     until domain_resolves_to_public_ip "$new" "$ip"; do
         (( waited >= 90 )) && break

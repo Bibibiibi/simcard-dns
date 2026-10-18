@@ -48,7 +48,8 @@ simcard-dns 是一套裝在 Linux 伺服器上的閘道。它同時是一台加�
 | 架構 | `amd64` 或 `arm64` |
 | 記憶體 | 至少 512 MB，建議 1 GB 以上 |
 | 網路 | 公網 IPv4、root 權限 |
-| 網域 | 一個 A 記錄指向伺服器的網域（安裝時會用它申請憑證） |
+| Cloudflare | 一個託管在 Cloudflare 的網域，以及一組 API Token（權限：Zone → Zone → Read、Zone → DNS → Edit） |
+| Telegram | 向 @BotFather 申請的 Bot Token，以及你自己的 Telegram 數字 ID（可向 @userinfobot 查詢） |
 
 ### 2. 安裝
 
@@ -56,7 +57,21 @@ simcard-dns 是一套裝在 Linux 伺服器上的閘道。它同時是一台加�
 curl -fsSL https://raw.githubusercontent.com/Bibibiibi/simcard-dns/main/install.sh | sudo bash
 ```
 
-照提示輸入網域即可。之後要升級，再執行同一行指令；現有設定會保留，失敗會自動回滾。
+安裝一開始會問三件事，之後全自動完成：
+
+1. **Cloudflare API Token**（輸入時不顯示）。Token 能管理多個網域時會讓你選一個。
+2. **Telegram Bot Token**（必填）。
+3. **管理員 Telegram ID**。
+
+安裝程式會用 Cloudflare DNS 驗證簽發 `*.dns.<你的網域>` 萬用字元憑證（不用開 80 埠），並自動建立一個隨機的 DoT 網域，例如 `k3x9…q2.dns.example.com`。安裝完成時會顯示這個網域，手機私人 DNS 就填它。
+
+沒有 Cloudflare 的話，可以改用自己的網域（A 記錄要先指向伺服器）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Bibibiibi/simcard-dns/main/install.sh | sudo env DOMAIN=dns.example.com bash
+```
+
+之後要升級，再執行同一行安裝指令；現有設定會保留，失敗會自動回滾。
 
 ### 3. 告訴伺服器誰是你的手機
 
@@ -78,7 +93,7 @@ sudo simcard-dns --set-client-cidrs "203.0.113.0/24 198.51.100.0/22"
 | TCP 853 | 所有人 | DNS over TLS |
 | TCP 80/443、UDP 443 | **只有客戶端網段** | 透明代理（HTTP、HTTPS、QUIC） |
 | TCP 8111 | 所有人 | iOS 描述檔下載 |
-| TCP 80 | 申請憑證時暫時開放 | Let's Encrypt HTTP-01 |
+| TCP 80 | 只有自有網域模式（`DOMAIN`）申請憑證時暫時開放 | Let's Encrypt HTTP-01（Cloudflare 模式不需要） |
 
 主機上沒有其他服務要顧的話，建議讓專案接管防火牆，80/443 就只會對客戶端網段開放：
 
