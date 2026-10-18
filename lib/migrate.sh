@@ -21,8 +21,11 @@ migrate_new_name() {
     name="${name//5gpn-/simcard-dns-}"
     printf '%s\n' "${name//5gpn/simcard-dns}"
 }
+# A real old install has its CLI or config; a bare /opt/5gpn holding only an
+# attempt marker (left by a cached old one-line installer) is not one.
 legacy_layout_present() {
-    [[ -d "${PGW_MIGRATE_ROOT:-}/opt/5gpn" ]]
+    local R="${PGW_MIGRATE_ROOT:-}"
+    [[ -f "$R/opt/5gpn/bin/5gpn-ctl" || -s "$R/opt/5gpn/etc/.domain" ]]
 }
 migrate_legacy_layout() {
     local R="${PGW_MIGRATE_ROOT:-}"

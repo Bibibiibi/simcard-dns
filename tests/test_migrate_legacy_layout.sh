@@ -158,6 +158,12 @@ grep -qx 'MGMT=/opt/5gpn/bin/5gpn-ctl' "$R/opt/5gpn/etc/tgbot.env" || fail "rest
 [[ -z "$(find "$R/etc/systemd/system" -name '*simcard-dns*')" ]] || fail "renamed units must be removed on failure"
 grep -qx 'start 5gpn-tgbot.service' "$log" || fail "old units must be restarted after a failed migration"
 
+# --- a bare /opt/5gpn (attempt marker only) is not an old install ---------------------------
+R="${tmp}/bare"; rm -rf "$R"; mkdir -p "$R/opt/5gpn" "$R/opt/simcard-dns/etc"
+echo attempt > "$R/opt/5gpn/.install-attempt"
+PGW_MIGRATE_ROOT="$R" migrate_legacy_layout || fail "a bare /opt/5gpn must not block upgrades of a new install"
+[[ -f "$R/opt/5gpn/.install-attempt" && -d "$R/opt/simcard-dns/etc" ]] || fail "a bare /opt/5gpn must be left alone"
+
 # --- both layouts present: refuse ----------------------------------------------------------
 build_legacy
 mkdir -p "$R/opt/simcard-dns/etc"
