@@ -12,7 +12,8 @@ tmp="$(mktemp -d)"
 fail() { echo "$1" >&2; exit 1; }
 info() { :; }; warn() { :; }; ok() { :; }; err() { echo "$*" >&2; }
 for fn in cf_api cf_conf cf_json issue_wildcard_cert cf_random_label cf_save_token cf_list_zones \
-    cf_create_a_record collect_cloudflare_token select_cloudflare_zone install_cloudflare_cert; do
+    cf_create_a_record cf_dot_records cf_retire_dot_records cf_wait_record \
+    collect_cloudflare_token select_cloudflare_zone install_cloudflare_cert; do
     eval "$(awk "/^${fn}\\(\\)/,/^}/" "${root}/lib/cert.sh")"
 done
 eval "$(awk '/^read_tgbot_setting\(\)/,/^}/' "${root}/lib/services.sh")"
@@ -35,7 +36,12 @@ grep -qF -- 'collect_tgbot_settings' <<< "$(awk '/^install_stage_finalize\(\)/,/
 cat > "${tmp}/cf.py" <<'PY'
 import json, urllib.parse
 from http.server import BaseHTTPRequestHandler, HTTPServer
-records = []
+records = [  # left by an earlier install on this server, and one elsewhere
+    {"id": "prev", "type": "A", "name": "oldoldold.dns.example.net", "content": "192.0.2.10",
+     "comment": "simcard-dns DoT", "zone": "z1", "proxied": False},
+    {"id": "other", "type": "A", "name": "otherhost.dns.example.net", "content": "198.51.100.7",
+     "comment": "simcard-dns DoT", "zone": "z1", "proxied": False},
+]
 ZONES = {"Bearer tok": [{"id": "z1", "name": "example.net"}],
          "Bearer multi": [{"id": "za", "name": "a.example"}, {"id": "zb", "name": "b.example"}]}
 class H(BaseHTTPRequestHandler):
@@ -54,6 +60,11 @@ class H(BaseHTTPRequestHandler):
             return self.reply(None, False, 403)
         if u.path == "/zones":
             return self.reply(zones)
+        if u.path.endswith("/dns_records") and method == "GET":
+            return self.reply([r for r in records if r["zone"] == u.path.split("/")[2]])
+        if "/dns_records/" in u.path and method == "DELETE":
+            rid = u.path.rsplit("/", 1)[1]; records[:] = [r for r in records if r["id"] != rid]
+            return self.reply({"id": rid})
         if u.path.endswith("/dns_records") and method == "POST":
             rec = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             rec["id"] = "r%d" % (len(records) + 1); rec["zone"] = u.path.split("/")[2]; records.append(rec)
@@ -61,6 +72,7 @@ class H(BaseHTTPRequestHandler):
         return self.reply(None, False, 404)
     def do_GET(self): self.route("GET")
     def do_POST(self): self.route("POST")
+    def do_DELETE(self): self.route("DELETE")
 srv = HTTPServer(("127.0.0.1", 0), H)
 print(srv.server_address[1], flush=True)
 srv.serve_forever()
@@ -106,6 +118,7 @@ label="$(cf_random_label)"
 [[ "$label" =~ ^[a-z0-9]{20}$ ]] || fail "DoT label must be 20 random lowercase characters"
 DOMAIN="${label}.dns.example.net"; PUBLIC_IP=192.0.2.10
 ensure_mosdns_user() { :; }
+cf_record_visible() { state | python3 -c 'import json,sys; sys.exit(0 if any(r["name"]==sys.argv[1] for r in json.load(sys.stdin)) else 1)' "$1"; }
 mkdir -p "${tmp}/bin"
 cat > "${tmp}/bin/certbot" <<MOCK
 #!/bin/bash
@@ -117,12 +130,14 @@ chmod +x "${tmp}/bin/certbot"
 PATH="${tmp}/bin:${PATH}" install_cloudflare_cert || fail "the Cloudflare certificate stage must succeed"
 grep -q -- '--dns-cloudflare' "${tmp}/certbot.log" || fail "the certificate must use DNS-01 (no TCP/80)"
 grep -qF -- '-d *.dns.example.net' "${tmp}/certbot.log" || fail "the certificate must be the *.dns.<zone> wildcard"
-python3 - "$(state)" "$DOMAIN" <<'PY' || fail "exactly one DNS-only A record for the new name must be created"
+python3 - "$(state)" "$DOMAIN" <<'PY' || fail "exactly one DNS-only A record for the new name must remain for this server"
 import json, sys
 recs, name = json.loads(sys.argv[1]), sys.argv[2]
-assert len(recs) == 1, recs
-r = recs[0]
-assert (r["type"], r["name"], r["content"], r["proxied"], r["zone"]) == ("A", name, "192.0.2.10", False, "z1"), r
+here = [r for r in recs if r["content"] == "192.0.2.10"]
+assert len(here) == 1, recs            # the earlier install's name was retired
+r = here[0]
+assert (r["type"], r["name"], r["proxied"], r["zone"], r["comment"]) == ("A", name, False, "z1", "simcard-dns DoT"), r
+assert any(r["id"] == "other" for r in recs), recs   # other servers' records are kept
 PY
 [[ "$(cat "${CONF_DIR}/.domain")" == "$DOMAIN" ]] || fail "the random name must become the DoT domain"
 [[ "$(cat "${CONF_DIR}/.cert_lineage")" == simcard-dns-wildcard ]] || fail "renewals must use the wildcard lineage"

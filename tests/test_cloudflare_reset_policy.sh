@@ -10,7 +10,8 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 tmp="$(mktemp -d)"
 fail() { echo "$1" >&2; exit 1; }
 info() { :; }; warn() { :; }; ok() { :; }; err() { echo "$*" >&2; }
-for fn in cf_api cf_conf cf_configured cf_json cf_random_label cf_create_a_record issue_wildcard_cert setup_cloudflare apply_wildcard_dot_domain reset_dot_domain; do
+for fn in cf_api cf_conf cf_configured cf_json cf_random_label cf_create_a_record cf_dot_records cf_retire_dot_records \
+    cf_wait_record issue_wildcard_cert setup_cloudflare apply_wildcard_dot_domain reset_dot_domain; do
     eval "$(awk "/^${fn}\\(\\)/,/^}/" "${root}/lib/cert.sh")"
 done
 
@@ -19,9 +20,11 @@ cat > "${tmp}/cf.py" <<'PY'
 import json, sys, urllib.parse
 from http.server import BaseHTTPRequestHandler, HTTPServer
 records = [
-    {"id": "old1", "type": "A", "name": "c6p1old.example.net", "content": "203.0.113.10"},
-    {"id": "old2", "type": "A", "name": "c6p1old.example.net", "content": "198.51.100.1"},
+    {"id": "old1", "type": "A", "name": "c6p1old.dns.example.net", "content": "203.0.113.10", "comment": "5gpn-x DoT"},
+    {"id": "old2", "type": "A", "name": "c6p1old.dns.example.net", "content": "198.51.100.1", "comment": "simcard-dns DoT"},
+    {"id": "stale", "type": "A", "name": "z9z9prev.dns.example.net", "content": "203.0.113.10", "comment": "simcard-dns-x DoT"},
     {"id": "keep", "type": "A", "name": "keepme.example.net", "content": "203.0.113.10"},
+    {"id": "keep2", "type": "A", "name": "mine.dns.example.net", "content": "203.0.113.10", "comment": "set by hand"},
 ]
 seq = []  # monotonic record ids, like Cloudflare (never reused)
 class H(BaseHTTPRequestHandler):
@@ -85,7 +88,9 @@ export PATH="${tmp}/bin:$PATH" PGW_RULES_UPDATER="${tmp}/updater"
 routing_lock() { :; }
 regenerate_ios_profile() { echo regen >> "${tmp}/ios.log"; }
 get_public_ip() { PUBLIC_IP=203.0.113.10; }
-domain_resolves_to_public_ip() { state | python3 -c 'import json,sys; sys.exit(0 if any(r["name"]==sys.argv[1] and r["content"]==sys.argv[2] for r in json.load(sys.stdin)) else 1)' "$1" "$2"; }
+# Cloudflare's nameservers serve whatever the mock API holds.
+cf_record_visible() { state | python3 -c 'import json,sys; sys.exit(0 if any(r["name"]==sys.argv[1] and r["content"]==sys.argv[2] for r in json.load(sys.stdin)) else 1)' "$1" "$2"; }
+domain_resolves_to_public_ip() { echo "public resolvers must not be polled for a new name" >&2; return 1; }
 
 # --- connect ------------------------------------------------------------------
 ( CF_API_TOKEN=wrong setup_cloudflare ) 2>/dev/null && fail "a rejected token must not be accepted"
@@ -110,9 +115,10 @@ import json, sys
 rs = {r["id"]: r for r in json.load(sys.stdin)}
 new = [r for r in rs.values() if r["name"] == sys.argv[1]]
 assert len(new) == 1 and new[0]["content"] == "203.0.113.10" and new[0]["proxied"] is False and new[0]["ttl"] == 60, new
-assert "old1" not in rs, "old record pointing at this server must be deleted"
-assert "old2" in rs, "old-name record pointing elsewhere must be kept"
-assert "keep" in rs, "unrelated records must be kept"
+assert "old1" not in rs, "the previous DoT record of this server must be deleted"
+assert "stale" not in rs, "DoT records left by earlier installs must be deleted too"
+assert "old2" in rs, "DoT records pointing at another server must be kept"
+assert "keep" in rs and "keep2" in rs, "records this project did not create must be kept"
 ' "$new" || fail "Cloudflare records are wrong after reset"
 
 # --- failed switch rolls everything back ---------------------------------------
@@ -122,9 +128,26 @@ before="$(cat "${CONF_DIR}/.domain")"
 [[ "$(cat "${CONF_DIR}/.domain")" == "$before" ]] || fail "domain must roll back"
 state | python3 -c '
 import json, sys
-names = [r["name"] for r in json.load(sys.stdin)]
-assert names.count(sys.argv[1]) == 1, names        # still the current one
-assert sum(n.endswith(".dns.example.net") for n in names) == 1, names  # failed new record removed
+mine = [r["name"] for r in json.load(sys.stdin)
+        if r.get("comment") == "simcard-dns DoT" and r["content"] == "203.0.113.10"]
+assert mine == [sys.argv[1]], mine   # only the current name; the failed new record is gone
 ' "$before" || fail "the record created by a failed reset must be deleted"
+
+# --- waiting asks Cloudflare's nameservers, not public resolvers ------------------
+eval "$(awk '/^cf_record_visible\(\)/,/^}/' "${root}/lib/cert.sh")"
+cat > "${tmp}/bin/dig" <<'MOCK'
+#!/bin/bash
+echo "$*" >> "$DIG_LOG"
+case "$*" in
+  "+short NS example.net") printf 'ns1.example.cf.\nns2.example.cf.\n' ;;
+  *"@ns2.example.cf.") echo 203.0.113.10 ;;
+esac
+MOCK
+chmod +x "${tmp}/bin/dig"
+export DIG_LOG="${tmp}/dig.log"
+cf_record_visible new.dns.example.net 203.0.113.10 || fail "a name served by the zone nameservers must count as visible"
+grep -q '@ns1.example.cf.' "$DIG_LOG" || fail "the zone's own nameservers must be asked"
+grep -qE '@(1\.1\.1\.1|8\.8\.8\.8)' "$DIG_LOG" && fail "public resolvers must not be asked (they cache 'no such name')"
+cf_record_visible new.dns.example.net 198.51.100.9 && fail "a different address must not count"
 
 echo "Cloudflare domain reset policy OK"

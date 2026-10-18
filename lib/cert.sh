@@ -426,6 +426,56 @@ cf_create_a_record() { # name ip -> prints the new record id
         "{\"type\":\"A\",\"name\":\"$1\",\"content\":\"$2\",\"ttl\":60,\"proxied\":false,\"comment\":\"simcard-dns DoT\"}" \
         | cf_json 'r["id"]'
 }
+# DoT A records this project created (any version, recognised by comment),
+# as "id<TAB>name<TAB>ip".
+cf_dot_records() {
+    local zone_id page=1 out comments="simcard-dns DoT|simcard-dns-x DoT|5gpn-x DoT"
+    zone_id="$(cf_conf zone_id)"
+    while :; do
+        out="$(cf_api GET "/zones/${zone_id}/dns_records?type=A&per_page=100&page=${page}")" || return 1
+        printf '%s' "$out" | CF_DOT_COMMENTS="$comments" CF_DOT_SUFFIX=".${CF_DOT_LABEL}.$(cf_conf zone)" python3 -c '
+import json, os, sys
+mine = set(os.environ["CF_DOT_COMMENTS"].split("|"))
+suffix = os.environ["CF_DOT_SUFFIX"]
+for r in json.load(sys.stdin):
+    if r.get("comment") in mine and r.get("name", "").endswith(suffix):
+        print("%s\t%s\t%s" % (r["id"], r["name"], r.get("content", "")))'
+        [[ "$(printf '%s' "$out" | cf_json 'len(r)')" -ge 100 ]] || break
+        page=$((page + 1))
+    done
+}
+# Delete every DoT record of ours that points at IP, except KEEP (may be empty).
+# Old names from earlier installs or resets would otherwise keep resolving.
+cf_retire_dot_records() {
+    local keep="$1" ip="$2" id name content records zone_id
+    zone_id="$(cf_conf zone_id)"
+    records="$(cf_dot_records)" || { warn "Could not list Cloudflare DNS records; old DoT names were not cleaned up"; return 1; }
+    while IFS=$'\t' read -r id name content; do
+        [[ -n "$id" && "$name" != "$keep" && "$content" == "$ip" ]] || continue
+        if cf_api DELETE "/zones/${zone_id}/dns_records/${id}" >/dev/null; then
+            info "Removed old DoT record: ${name}"
+        else
+            warn "Could not delete the old DNS record of ${name}"
+        fi
+    done <<< "$records"
+}
+# True once the zone's own nameservers answer NAME -> IP. Asking them instead
+# of public resolvers never caches a "no such name" answer for the new name.
+cf_record_visible() {
+    local name="$1" ip="$2" ns
+    command -v dig >/dev/null 2>&1 || return 0
+    for ns in $(dig +short NS "$(cf_conf zone)" 2>/dev/null); do
+        dig +short +time=2 +tries=1 A "$name" @"$ns" 2>/dev/null | grep -qx "$ip" && return 0
+    done
+    return 1
+}
+cf_wait_record() { # name ip seconds
+    local waited=0
+    until cf_record_visible "$1" "$2"; do
+        (( waited >= $3 )) && return 1
+        sleep 5; waited=$((waited + 5))
+    done
+}
 # Ask for the token (CF_API_TOKEN, or typed without echo). Kept in memory only
 # until select_cloudflare_zone writes it to CF_CREDENTIALS.
 collect_cloudflare_token() {
@@ -488,6 +538,10 @@ install_cloudflare_cert() {
     issue_wildcard_cert || return 1
     cf_create_a_record "$DOMAIN" "$PUBLIC_IP" >/dev/null || { err "Could not create the A record for ${DOMAIN}"; return 1; }
     info "A record created: ${DOMAIN} -> ${PUBLIC_IP} (DNS only)"
+    # Names from earlier installs on this server stop resolving.
+    cf_retire_dot_records "$DOMAIN" "$PUBLIC_IP" || true
+    cf_wait_record "$DOMAIN" "$PUBLIC_IP" 60 \
+        || warn "${DOMAIN} is not served by Cloudflare's nameservers yet; it should resolve within a few minutes"
     live="${LE_LIVE_DIR}/${CF_CERT_NAME}"
     mkdir -p "${MOSDNS_DIR}/certs" "$CONF_DIR"
     cp "${live}/fullchain.pem" "${MOSDNS_DIR}/certs/fullchain.pem" || return 1
@@ -584,7 +638,7 @@ apply_wildcard_dot_domain() {
 reset_dot_domain() {
     routing_lock
     cf_configured || { err "Cloudflare not connected; run: $0 --setup-cloudflare"; exit 1; }
-    local zone zone_id label new old ip new_id id waited=0
+    local zone zone_id label new ip new_id
     zone="$(cf_conf zone)"; zone_id="$(cf_conf zone_id)"
     if [[ ! -s "${LE_LIVE_DIR}/${CF_CERT_NAME}/fullchain.pem" ]]; then
         issue_wildcard_cert || exit 1
@@ -593,14 +647,9 @@ reset_dot_domain() {
     new="${label}.${CF_DOT_LABEL}.${zone}"
     ip="$(cat "${MOSDNS_DIR}/.public_ip" 2>/dev/null || true)"
     [[ -n "$ip" ]] || { get_public_ip; ip="$PUBLIC_IP"; }
-    old="$(cat "${CONF_DIR}/.domain" 2>/dev/null || true)"
     new_id="$(cf_create_a_record "$new" "$ip")" || { err "Could not create the DNS record"; exit 1; }
-    info "A record created: ${new} -> ${ip}; waiting until it resolves..."
-    until domain_resolves_to_public_ip "$new" "$ip"; do
-        (( waited >= 90 )) && break
-        sleep 5; waited=$((waited + 5))
-    done
-    if ! domain_resolves_to_public_ip "$new" "$ip"; then
+    info "A record created: ${new} -> ${ip}; waiting until Cloudflare serves it..."
+    if ! cf_wait_record "$new" "$ip" 90; then
         cf_api DELETE "/zones/${zone_id}/dns_records/${new_id}" >/dev/null || true
         err "${new} did not resolve within 90s; nothing was changed"
         exit 1
@@ -609,15 +658,9 @@ reset_dot_domain() {
         cf_api DELETE "/zones/${zone_id}/dns_records/${new_id}" >/dev/null || true
         exit 1
     fi
-    # Retire the previous name: only A records of that exact name that point
-    # at this server are deleted, so unrelated records are never touched.
-    if [[ -n "$old" && "$old" != "$new" && "$old" == *".${zone}" ]]; then
-        for id in $(cf_api GET "/zones/${zone_id}/dns_records?type=A&name=${old}" \
-                    | cf_json "[x['id'] for x in r if x.get('content') == '${ip}']" 2>/dev/null); do
-            cf_api DELETE "/zones/${zone_id}/dns_records/${id}" >/dev/null \
-                || warn "Could not delete the old DNS record of ${old}"
-        done
-    fi
+    # Retire every earlier DoT name of this server: only records this project
+    # created (by comment) that point here, so unrelated records are kept.
+    cf_retire_dot_records "$new" "$ip" || true
     ok "DoT domain reset: ${new}"
     printf 'NEW_DOMAIN=%s\n' "$new"
 }

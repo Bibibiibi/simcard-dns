@@ -50,6 +50,7 @@ class UninstallCompleteTests(unittest.TestCase):
 set -euo pipefail
 source "$(dirname "$0")/install.sh"
 set_exit() { echo "set_exit $*" >> "$TEST_ROOT/events"; }
+cf_retire_dot_records() { echo "cf_retire [$1] $2" >> "$TEST_ROOT/events"; }
 do_uninstall
 ''')
         self.populate()
@@ -102,6 +103,8 @@ do_uninstall
                      '/var/lib/systemd/timers/stamp-simcard-dns-geo-update.timer',
                      '/var/backups/simcard-dns/upgrade.x/config-code.tar.gz', '/usr/local/go/bin/go'):
             self.put(path)
+        self.put('/etc/simcard-dns/cloudflare.conf', 'zone=example.net\nzone_id=z1\n')
+        self.put('/etc/mosdns/.public_ip', '192.0.2.10\n')
         self.put('/etc/security/limits.conf', '# site limit\n@users soft nproc 100\n' + LIMITS_BLOCK)
         self.put('/etc/sysctl.conf', '# disabled by simcard-dns (see 99-simcard-dns.conf): vm.swappiness=10\nnet.core.somaxconn=1024\n')
         self.put('/etc/letsencrypt/renewal/simcard-dns-wildcard.conf',
@@ -161,6 +164,8 @@ do_uninstall
         self.assertNotIn('someone-else', events)
         self.assertIn('systemctl restart systemd-journald', events)
         self.assertIn('userdel pxout', events)
+        # Every DoT record of this server on Cloudflare is removed (keep nothing).
+        self.assertIn('cf_retire [] 192.0.2.10', events)
 
     def test_optional_items_are_kept_when_declined(self):
         result = self.run_uninstall('y\nn\nn\nn\n')
@@ -180,7 +185,7 @@ do_uninstall
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(self.exists('/opt/simcard-dns/bin/simcard-dns'))
         self.assertTrue(self.exists('/etc/systemd/system/mosdns.service'))
-        self.assertEqual(self.events(), '')
+        self.assertEqual(self.events(), '')  # cancelled: Cloudflare untouched too
 
     def test_real_old_install_is_not_deleted(self):
         self.put('/opt/5gpn/bin/5gpn-ctl')

@@ -169,7 +169,7 @@ sudo simcard-dns --geo-allow update       # 立即更新地區名單
 sudo simcard-dns --set-dot-domain dns.example.com    # 換成自己的網域（A 記錄要先指向伺服器）
 sudo simcard-dns --renew-cert                        # 立即續期憑證
 sudo simcard-dns --setup-cloudflare                  # 接上 Cloudflare（權杖輸入時不顯示）
-sudo simcard-dns --reset-domain                      # 換成新的隨機網域，舊網域立即失效
+sudo simcard-dns --reset-domain                      # 換成新的隨機網域；這台伺服器以前的 DoT 網域記錄會一併刪除
 sudo simcard-dns -ios                                # 重新產生 iOS 描述檔與 QR Code
 ```
 
@@ -188,7 +188,7 @@ sudo simcard-dns --setup-tgbot            # 設定 Bot 權杖與管理員
 **解除安裝**
 
 ```bash
-sudo simcard-dns --uninstall              # 完整清除；憑證、備份、Go 會逐項詢問（預設保留）
+sudo simcard-dns --uninstall              # 完整清除（含 Cloudflare 上這台伺服器的 DoT 記錄）；憑證、備份、Go 會逐項詢問
 ```
 
 完整說明請看文件：

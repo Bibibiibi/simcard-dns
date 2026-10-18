@@ -55,6 +55,15 @@ do_uninstall() {
         uninstall_ask "删除 Go 编译器 /usr/local/go？（其他程序若也在用请保留）" && del_go=1
     fi
 
+    # DoT DNS records this project created for this server on Cloudflare
+    # (needs the token, so before /etc/simcard-dns is removed).
+    if declare -F cf_configured >/dev/null && cf_configured; then
+        local dot_ip
+        dot_ip="$(cat /etc/mosdns/.public_ip 2>/dev/null || true)"
+        if [[ -n "$dot_ip" ]]; then
+            cf_retire_dot_records "" "$dot_ip" || warn "Remove the DoT A records of ${dot_ip} in the Cloudflare dashboard"
+        fi
+    fi
     set_exit local 2>/dev/null || true
     # Older versions stacked one copy per apply; remove them all.
     while ip rule del fwmark "${EXIT_MARK}" table "${EXIT_TABLE}" 2>/dev/null; do :; done
