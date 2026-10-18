@@ -20,9 +20,9 @@ do_uninstall() {
         systemctl stop "5gpn-singbox@$(basename "$f" .type).service" 2>/dev/null || true
     done
     shopt -u nullglob
-    systemctl stop mosdns dot-gate dnsdist sniproxy wa-shim quic-proxy china-dns-race-proxy 5gpn-ios-profile.socket 5gpn-ios-profile 5gpn-exit 5gpn-tgbot 2>/dev/null || true
-    systemctl disable mosdns dot-gate dnsdist sniproxy wa-shim quic-proxy china-dns-race-proxy 5gpn-ios-profile.socket 5gpn-ios-profile 5gpn-exit 5gpn-tgbot 2>/dev/null || true
-    rm -f /etc/systemd/system/{mosdns,dot-gate,sniproxy,wa-shim,quic-proxy,china-dns-race-proxy,5gpn-ios-profile,update-mosdns-rules,5gpn-exit,5gpn-tgbot}.*
+    systemctl stop mosdns dot-gate dnsdist sniproxy wa-shim quic-proxy china-dns-race-proxy 5gpn-ios-profile.socket 5gpn-ios-profile 5gpn-exit 5gpn-geo-update.timer 5gpn-tgbot 2>/dev/null || true
+    systemctl disable mosdns dot-gate dnsdist sniproxy wa-shim quic-proxy china-dns-race-proxy 5gpn-ios-profile.socket 5gpn-ios-profile 5gpn-exit 5gpn-geo-update.timer 5gpn-tgbot 2>/dev/null || true
+    rm -f /etc/systemd/system/{mosdns,dot-gate,sniproxy,wa-shim,quic-proxy,china-dns-race-proxy,5gpn-ios-profile,update-mosdns-rules,5gpn-exit,5gpn-geo-update,5gpn-tgbot}.*
     rm -f /etc/systemd/system/5gpn-ios-profile@.service \
         /etc/systemd/system/5gpn-mihomo@.service \
         /etc/systemd/system/5gpn-singbox@.service

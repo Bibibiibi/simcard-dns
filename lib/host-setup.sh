@@ -422,12 +422,14 @@ firewall_managed_apply() {
         cat > "$tmp_conf" <<'EOF' || return 1
 #!/usr/sbin/nft -f
 flush ruleset
+include "__GEO_NFT__"
 
 table inet filter {
     chain input {
         type filter hook input priority 0; policy drop;
         iif "lo" accept
         ct state established,related accept
+        jump geo_gate
         tcp dport { __TCP_PORTS__ } accept
         # DoT 853 — per-IP QPS 10000 then accept.
         tcp dport 853 meter dns_rate_dot { ip saddr limit rate over 10000/second } drop
@@ -450,7 +452,10 @@ table inet filter {
 # reloaded independently after partial firewall reloads.
 include "/etc/5gpn/pgw-exit.nft"
 EOF
-        sed -i -e "s/__TCP_PORTS__/${tcp_ports}/" -e "s#__CLIENT_CIDRS__#${client_nets// /, }#g" "$tmp_conf" || return 1
+        # Regional allowlist (off unless --geo-allow on): sets + chain geo_gate.
+        write_geo_allow_nft || { rm -f "$tmp_conf"; warn "Regional allowlist failed to render; existing firewall left unchanged."; return 1; }
+        sed -i -e "s/__TCP_PORTS__/${tcp_ports}/" -e "s#__CLIENT_CIDRS__#${client_nets// /, }#g" \
+            -e "s#__GEO_NFT__#${GEO_NFT}#" "$tmp_conf" || return 1
         if ! nft -c -f "$tmp_conf" >/dev/null 2>&1; then
             rm -f "$tmp_conf"
             warn "Generated nftables config failed validation; existing firewall left unchanged."
@@ -540,7 +545,7 @@ firewall_cleanup_on_uninstall() {
             info "Restored pre-install ${nft_conf} from backup."
         else
             local tmp; tmp="$(mktemp)"
-            grep -vE 'include[[:space:]]+"/etc/5gpn/pgw-exit\.nft"' "$nft_conf" > "$tmp"
+            grep -vE 'include[[:space:]]+"(/etc/5gpn/pgw-exit\.nft|[^"]*geo-allow\.nft)"|^[[:space:]]*jump geo_gate$' "$nft_conf" > "$tmp"
             if command -v nft >/dev/null 2>&1 && ! nft -c -f "$tmp" >/dev/null 2>&1; then
                 warn "Could not derive a valid ${nft_conf} after dropping the pgw-exit include; writing a minimal empty ruleset instead."
                 printf '#!/usr/sbin/nft -f\nflush ruleset\n' > "$tmp"
@@ -627,4 +632,380 @@ close_cert_http_port() {
 restore_reverse_proxy_firewall() {
     close_cert_http_port
     setup_firewall >/dev/null 2>&1 || true
+}
+
+# ---- Regional allowlist (geo gate) ------------------------------------------
+# Optional, managed nftables only. When on, NEW TCP connections to the gated
+# ports (detected SSH ports, DoT 853, iOS profile 8111) are accepted only from
+# the listed countries' address space or the client networks; the client
+# networks are always merged in so an allowlisted carrier is never locked out.
+# Country space comes from APNIC delegated stats (registration country), checked
+# against the published MD5 and the file's own record counts. Everything lives
+# in geo-allow.nft (two interval sets + chain geo_gate); the managed
+# /etc/nftables.conf only includes it and jumps to geo_gate, so toggling and
+# updating reload that one file, never the whole ruleset. A failed download or
+# render keeps the previous list.
+GEO_CONF="${PGW_GEO_CONF:-/etc/5gpn/geo-allow.conf}"
+GEO_NFT="${PGW_GEO_NFT:-/etc/5gpn/geo-allow.nft}"
+GEO_CACHE="${PGW_GEO_CACHE:-/etc/5gpn/geo-ranges.txt}"
+GEO_SOURCE="${PGW_GEO_SOURCE:-https://ftp.apnic.net/stats/apnic/delegated-apnic-latest}"
+GEO_UNIT_DIR="${PGW_GEO_UNIT_DIR:-/etc/systemd/system}"
+GEO_DEFAULT_COUNTRIES="HK,MO,TW"
+
+geo_tool() {
+    python3 - "$@" <<'PY'
+import hashlib, ipaddress, os, sys, urllib.request
+
+def read_url(url, timeout):
+    with urllib.request.urlopen(url, timeout=timeout) as resp:
+        return resp.read()
+
+def load_cache(path):
+    v4, v6, meta = [], [], {}
+    with open(path, encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if line.startswith("#"):
+                key, _, value = line[1:].strip().partition("=")
+                if value:
+                    meta[key.strip()] = value.strip()
+            elif line:
+                net = ipaddress.ip_network(line, strict=False)
+                (v6 if net.version == 6 else v4).append(net)
+    return v4, v6, meta
+
+def elements(nets):
+    items = [str(n) for n in nets]
+    return ",\n".join("            " + ", ".join(items[i:i + 8]) for i in range(0, len(items), 8))
+
+cmd, args = sys.argv[1], sys.argv[2:]
+if cmd == "fetch":
+    src, out = args[0], args[2]
+    countries = sorted(set(args[1].upper().replace(",", " ").split()))
+    try:
+        data = read_url(src, 120)
+        digest = read_url(src + ".md5", 30).decode("ascii", "replace").lower()
+    except Exception as exc:
+        sys.exit("download failed: %s" % exc)
+    if hashlib.md5(data).hexdigest() not in digest:
+        sys.exit("checksum mismatch (truncated or altered download)")
+    expected, seen, serial = {}, {"ipv4": 0, "ipv6": 0}, ""
+    v4, v6, per = [], [], dict.fromkeys(countries, 0)
+    for raw in data.decode("ascii", "replace").splitlines():
+        if not raw or raw.startswith("#"):
+            continue
+        f = raw.split("|")
+        if f[0].isdigit():
+            serial = serial or (f[2] if len(f) > 2 else "")
+            continue
+        if len(f) >= 6 and f[5] == "summary":
+            expected[f[2]] = int(f[4])
+            continue
+        if len(f) < 7 or f[2] not in seen:
+            continue
+        seen[f[2]] += 1
+        if f[1] not in per or f[6] not in ("allocated", "assigned"):
+            continue
+        try:
+            if f[2] == "ipv4":
+                start = ipaddress.IPv4Address(f[3])
+                v4.extend(ipaddress.summarize_address_range(start, start + int(f[4]) - 1))
+            else:
+                v6.append(ipaddress.IPv6Network("%s/%s" % (f[3], f[4])))
+        except ValueError:
+            sys.exit("malformed record: %s" % raw)
+        per[f[1]] += 1
+    for kind, count in seen.items():
+        if expected.get(kind) != count:
+            sys.exit("record count mismatch for %s (truncated download?)" % kind)
+    missing = [c for c in countries if not per[c]]
+    if missing:
+        sys.exit("no address space found for: %s" % " ".join(missing))
+    v4 = list(ipaddress.collapse_addresses(v4))
+    v6 = list(ipaddress.collapse_addresses(v6))
+    total = sum(n.num_addresses for n in v4)
+    if os.path.exists(out):
+        old4, _, meta = load_cache(out)
+        if meta.get("countries") == ",".join(countries) and total * 2 < sum(n.num_addresses for n in old4):
+            sys.exit("new list has under half the previous IPv4 space; keeping the previous list")
+    tmp = out + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as handle:
+        handle.write("# source=%s\n# date=%s\n# countries=%s\n" % (src, serial, ",".join(countries)))
+        handle.writelines("%s\n" % n for n in v4 + v6)
+    os.replace(tmp, out)
+    print("%s\t%d\t%d" % (serial, len(v4), len(v6)))
+elif cmd == "stats":
+    v4, v6, meta = load_cache(args[0])
+    print("updated\t%s\nv4\t%d\nv6\t%d" % (meta.get("date", "?"), len(v4), len(v6)))
+elif cmd == "check":
+    # Print the given addresses that the allowlist (cache + clients) misses.
+    v4, v6, _ = load_cache(args[0])
+    nets = v4 + v6 + [ipaddress.ip_network(c, strict=False) for c in args[1].split()]
+    for text in args[2:]:
+        try:
+            ip = ipaddress.ip_address(text)
+        except ValueError:
+            continue
+        ip = getattr(ip, "ipv4_mapped", None) or ip
+        if not any(ip in n for n in nets if n.version == ip.version):
+            print(ip)
+elif cmd == "render":
+    cache, clients, ports, state = args
+    v4, v6, meta = [], [], {}
+    gate = ""
+    if state == "on":
+        plist = [p for p in ports.replace(",", " ").split()]
+        if not plist or not all(p.isdigit() and 0 < int(p) < 65536 for p in plist):
+            sys.exit("invalid gated port list: %r" % ports)
+        v4, v6, meta = load_cache(cache)
+        v4 = list(ipaddress.collapse_addresses(
+            v4 + [ipaddress.IPv4Network(c, strict=False) for c in clients.split()]))
+        v6 = list(ipaddress.collapse_addresses(v6))
+        if not v4:
+            sys.exit("empty regional allowlist")
+        gate = ("        meta l4proto != tcp return\n"
+                "        tcp dport != { %s } return\n"
+                "        ip saddr @geo_allow4 return\n"
+                "        ip6 saddr @geo_allow6 return\n"
+                "        counter drop\n") % ", ".join(str(int(p)) for p in sorted(set(plist), key=int))
+    def nft_set(name, kind, nets):
+        body = "        type %s; flags interval;\n" % kind
+        if nets:
+            body += "        elements = {\n%s\n        }\n" % elements(nets)
+        return "    set %s {\n%s    }\n" % (name, body)
+    print("#!/usr/sbin/nft -f")
+    print("# 5GPN-X regional allowlist: generated by 5gpn-ctl --geo-allow; do not edit.")
+    print("# state=%s countries=%s date=%s ports=%s" % (state, meta.get("countries", "-"), meta.get("date", "-"), ports or "-"))
+    print("table inet filter {")
+    print("    set geo_allow4 { type ipv4_addr; flags interval; }")
+    print("    set geo_allow6 { type ipv6_addr; flags interval; }")
+    print("    chain geo_gate {\n    }")
+    print("}")
+    print("flush chain inet filter geo_gate")
+    print("flush set inet filter geo_allow4")
+    print("flush set inet filter geo_allow6")
+    sys.stdout.write("table inet filter {\n" + nft_set("geo_allow4", "ipv4_addr", v4)
+                     + nft_set("geo_allow6", "ipv6_addr", v6)
+                     + "    chain geo_gate {\n" + gate + "    }\n}\n")
+else:
+    sys.exit("unknown geo_tool command: " + cmd)
+PY
+}
+geo_conf_get() {
+    local v
+    v="$(sed -n "s/^${1}=//p" "$GEO_CONF" 2>/dev/null | tail -n 1)"
+    printf '%s\n' "${v:-${2:-}}"
+}
+geo_write_conf() {
+    local tmp
+    mkdir -p "$(dirname "$GEO_CONF")" || return 1
+    tmp="$(mktemp "${GEO_CONF}.XXXXXX")" || return 1
+    printf '# 5GPN-X regional allowlist (5gpn-ctl --geo-allow)\nGEO_ALLOW=%s\nGEO_PORTS=%s\nGEO_COUNTRIES=%s\n' \
+        "$1" "$2" "$3" > "$tmp" && chmod 644 "$tmp" && mv -f "$tmp" "$GEO_CONF"
+}
+# Render geo-allow.nft from the saved state, the cached country list and the
+# current client networks. Validated before it replaces the previous file.
+write_geo_allow_nft() {
+    local clients tmp
+    clients="$(current_client_cidrs)" || return 1
+    mkdir -p "$(dirname "$GEO_NFT")" || return 1
+    tmp="$(mktemp "${GEO_NFT}.XXXXXX")" || return 1
+    if ! geo_tool render "$GEO_CACHE" "$clients" "$(geo_conf_get GEO_PORTS)" "$(geo_conf_get GEO_ALLOW off)" > "$tmp" \
+        || ! nft -c -f "$tmp" >/dev/null 2>&1; then
+        rm -f "$tmp"
+        return 1
+    fi
+    chmod 644 "$tmp" && mv -f "$tmp" "$GEO_NFT"
+}
+load_geo_allow_nft() {
+    nft -f "$GEO_NFT" >/dev/null 2>&1
+}
+# Add the include and the jump to a managed /etc/nftables.conf in place (hosts
+# installed before the gate existed), validate, then load. Returns 2 when the
+# host is not running the project's managed ruleset, so nothing was touched.
+ensure_managed_geo_hook() {
+    local conf="${PGW_NFT_CONF:-/etc/nftables.conf}" tmp
+    [[ -f "$conf" ]] || return 2
+    grep -q 'include "/etc/5gpn/pgw-exit.nft"' "$conf" || return 2
+    grep -q '^flush ruleset' "$conf" || return 2
+    grep -qE '^[[:space:]]*ct state established,related accept' "$conf" || return 2
+    if grep -qF "include \"${GEO_NFT}\"" "$conf" && grep -qE '^[[:space:]]*jump geo_gate$' "$conf"; then
+        return 0
+    fi
+    command -v nft >/dev/null 2>&1 || return 1
+    tmp="$(mktemp "${conf}.pgw.XXXXXX")" || return 1
+    if ! awk -v inc="include \"${GEO_NFT}\"" '
+        /^[[:space:]]*include "[^"]*geo-allow\.nft"/ || /^[[:space:]]*jump geo_gate$/ { next }
+        { print }
+        /^flush ruleset/ && !i { print inc; i = 1 }
+        /^[[:space:]]*ct state established,related accept/ && !j { print "        jump geo_gate"; j = 1 }
+    ' "$conf" > "$tmp" || ! nft -c -f "$tmp" >/dev/null 2>&1; then
+        rm -f "$tmp"
+        return 1
+    fi
+    if ! install -m 755 "$tmp" "$conf"; then
+        rm -f "$tmp"
+        return 1
+    fi
+    rm -f "$tmp"
+    nft -f "$conf" >/dev/null 2>&1
+}
+# Source addresses of admin sessions that must survive turning the gate on:
+# the calling SSH session and every logged-in remote session.
+geo_admin_sources() {
+    [[ -z "${SSH_CONNECTION:-}" ]] || printf '%s\n' "${SSH_CONNECTION%% *}"
+    who --ips 2>/dev/null | awk 'NF >= 5 { print $NF }'
+}
+install_geo_update_timer() {
+    mkdir -p "$GEO_UNIT_DIR" || return 1
+    cat > "${GEO_UNIT_DIR}/5gpn-geo-update.service" <<EOF
+[Unit]
+Description=5GPN-X regional allowlist update (APNIC)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=${BASE_DIR}/bin/5gpn-ctl --geo-allow update
+EOF
+    cat > "${GEO_UNIT_DIR}/5gpn-geo-update.timer" <<'EOF'
+[Unit]
+Description=Daily 5GPN-X regional allowlist update
+
+[Timer]
+OnCalendar=*-*-* 04:30:00
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    systemctl enable --now 5gpn-geo-update.timer >/dev/null 2>&1 || true
+}
+remove_geo_update_timer() {
+    systemctl disable --now 5gpn-geo-update.timer >/dev/null 2>&1 || true
+    rm -f "${GEO_UNIT_DIR}/5gpn-geo-update.service" "${GEO_UNIT_DIR}/5gpn-geo-update.timer"
+    systemctl daemon-reload >/dev/null 2>&1 || true
+}
+# Put back a saved geo-allow.conf (or none) and re-apply it.
+geo_restore_conf() {
+    if [[ -n "$1" ]]; then printf '%s\n' "$1" > "$GEO_CONF"; else rm -f "$GEO_CONF"; fi
+    write_geo_allow_nft && load_geo_allow_nft
+}
+geo_allow_on() {
+    routing_lock
+    local conf="${PGW_NFT_CONF:-/etc/nftables.conf}" countries ports clients outside saved rc=0
+    if ! command -v nft >/dev/null 2>&1 || ! grep -q 'include "/etc/5gpn/pgw-exit.nft"' "$conf" 2>/dev/null; then
+        err "The regional allowlist needs the managed nftables firewall (FIREWALL_MODE=managed)"
+        exit 1
+    fi
+    countries="$(geo_conf_get GEO_COUNTRIES "$GEO_DEFAULT_COUNTRIES")"
+    ports="${PGW_GEO_PORTS:-$(detect_ssh_ports),853,8111}"
+    if [[ ! -s "$GEO_CACHE" ]]; then
+        info "Downloading ${countries} address space from APNIC..."
+        geo_tool fetch "$GEO_SOURCE" "$countries" "$GEO_CACHE" >/dev/null \
+            || { err "Regional list download failed; firewall unchanged"; exit 1; }
+    fi
+    clients="$(current_client_cidrs)" || exit 1
+    # shellcheck disable=SC2046 # one argument per address
+    outside="$(geo_tool check "$GEO_CACHE" "$clients" $(geo_admin_sources) | paste -sd' ' -)" || exit 1
+    if [[ -n "$outside" && "${PGW_GEO_FORCE:-}" != 1 ]]; then
+        err "Refusing: admin session(s) from ${outside} are outside ${countries} and would lose SSH (PGW_GEO_FORCE=1 overrides)"
+        exit 1
+    fi
+    saved="$(cat "$GEO_CONF" 2>/dev/null || true)"
+    geo_write_conf on "$ports" "$countries" || { err "Cannot write ${GEO_CONF}"; exit 1; }
+    if ! write_geo_allow_nft; then
+        geo_restore_conf "$saved"
+        err "Regional allowlist failed to render or validate; firewall unchanged"
+        exit 1
+    fi
+    ensure_managed_geo_hook || rc=$?
+    if (( rc != 0 )) || ! load_geo_allow_nft; then
+        geo_restore_conf "$saved"
+        if (( rc == 2 )); then
+            err "The regional allowlist needs the managed nftables firewall (FIREWALL_MODE=managed)"
+        else
+            err "Could not hook the regional allowlist into ${conf}; firewall unchanged"
+        fi
+        exit 1
+    fi
+    install_geo_update_timer
+    ok "Regional allowlist on: TCP ${ports} only from ${countries} and the client networks"
+}
+geo_allow_off() {
+    routing_lock
+    if [[ "$(geo_conf_get GEO_ALLOW off)" != on ]]; then
+        ok "Regional allowlist is already off"
+        return 0
+    fi
+    local saved
+    saved="$(cat "$GEO_CONF")"
+    geo_write_conf off "$(geo_conf_get GEO_PORTS)" "$(geo_conf_get GEO_COUNTRIES "$GEO_DEFAULT_COUNTRIES")" \
+        || { err "Cannot write ${GEO_CONF}"; exit 1; }
+    if ! write_geo_allow_nft || ! load_geo_allow_nft; then
+        geo_restore_conf "$saved"
+        err "Could not turn the regional allowlist off; it is still on"
+        exit 1
+    fi
+    remove_geo_update_timer
+    ok "Regional allowlist off"
+}
+geo_allow_update() {
+    routing_lock
+    local countries backup="" rc=0
+    countries="$(geo_conf_get GEO_COUNTRIES "$GEO_DEFAULT_COUNTRIES")"
+    if [[ -f "$GEO_CACHE" ]]; then
+        backup="$(mktemp "${GEO_CACHE}.bak.XXXXXX")" && cp -a "$GEO_CACHE" "$backup" || exit 1
+    fi
+    if ! geo_tool fetch "$GEO_SOURCE" "$countries" "$GEO_CACHE" >/dev/null; then
+        [[ -z "$backup" ]] || rm -f "$backup"
+        err "Regional list update failed; the previous list stays in effect"
+        exit 1
+    fi
+    if [[ "$(geo_conf_get GEO_ALLOW off)" == on ]] && { ! write_geo_allow_nft || ! load_geo_allow_nft; }; then
+        if [[ -n "$backup" ]]; then mv -f "$backup" "$GEO_CACHE"; else rm -f "$GEO_CACHE"; fi
+        if write_geo_allow_nft; then load_geo_allow_nft || true; fi
+        err "New regional list failed to load; the previous list stays in effect"
+        rc=1
+    fi
+    [[ -z "$backup" ]] || rm -f "$backup"
+    (( rc == 0 )) || exit 1
+    ok "Regional list updated ($(geo_tool stats "$GEO_CACHE" | awk -F'\t' '{ printf "%s%s=%s", sep, $1, $2; sep=" " }'))"
+}
+# Machine-readable for the bot: "key<TAB>value" lines.
+geo_allow_status() {
+    local state active=no blocked=0 input gate
+    state="$(geo_conf_get GEO_ALLOW off)"
+    printf 'state\t%s\ncountries\t%s\nports\t%s\n' "$state" \
+        "$(geo_conf_get GEO_COUNTRIES "$GEO_DEFAULT_COUNTRIES")" "$(geo_conf_get GEO_PORTS -)"
+    if [[ -s "$GEO_CACHE" ]]; then
+        geo_tool stats "$GEO_CACHE"
+    else
+        printf 'updated\t-\nv4\t0\nv6\t0\n'
+    fi
+    if [[ "$state" == on ]]; then
+        input="$(nft list chain inet filter input 2>/dev/null || true)"
+        gate="$(nft list chain inet filter geo_gate 2>/dev/null || true)"
+        if [[ "$input" == *"jump geo_gate"* && "$gate" == *"counter packets"* ]]; then
+            active=yes
+            blocked="$(awk '{ for (i = 1; i < NF; i++) if ($i == "packets") { print $(i + 1); exit } }' <<< "$gate")"
+        fi
+    fi
+    printf 'active\t%s\nblocked\t%s\n' "$active" "${blocked:-0}"
+}
+# Client networks are merged into the regional allowlist: keep it in step.
+refresh_geo_allow_clients() {
+    [[ "$(geo_conf_get GEO_ALLOW off)" == on ]] || return 0
+    write_geo_allow_nft && load_geo_allow_nft
+}
+geo_allow_cmd() {
+    case "${1:-status}" in
+        on) geo_allow_on ;;
+        off) geo_allow_off ;;
+        update) geo_allow_update ;;
+        status) geo_allow_status ;;
+        *) err "Usage: $0 --geo-allow on|off|update|status"; exit 1 ;;
+    esac
 }

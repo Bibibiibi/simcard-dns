@@ -38,7 +38,7 @@
 | `lib/mosdns.yaml.template` | `proxy_client`：規則封鎖→拒絕、規則網域→伺服器 IP、其餘正常解析；`other_client`：正常解析；AAAA 全部過濾 |
 | `lib/update-rules.sh` | 產生 mosdns 設定（交易式發佈）；`build_rule_domains` 從分流規則產生 `rule-domains.txt` / `rule-block.txt`（`.mrs` 改讀同目錄 `.list`；`--render-only` 不連網） |
 | `lib/mihomo-router-config.py` | smart 出口設定；規則目標 `local`=伺服器本機出口、`direct`=不經伺服器、`block`=拒絕 |
-| `lib/host-setup.sh` | 防火牆（preserve / auto / managed）、`pgw_exit` 表（`ct direction reply` 排除回包、`no_self_loop` 禁止代理連回本機 80/443） |
+| `lib/host-setup.sh` | 防火牆（preserve / auto / managed）、`pgw_exit` 表（`ct direction reply` 排除回包、`no_self_loop` 禁止代理連回本機 80/443）、地區白名單 `--geo-allow` |
 | `lib/dns.sh` | 客戶端網段 `--set-client-cidrs`、ASN 白名單 `--add/--del/--list/--lookup-client-asn`、網域與 DNS 設定 |
 | `lib/cert.sh` | 憑證；Cloudflare `--setup-cloudflare`、`--reset-domain`（通配符 `*.dns.<zone>`，`.cert_lineage=5gpn-wildcard`） |
 | `lib/tgbot.py` | Telegram Bot：狀態、出口、分流、🛡 白名單、👥 連入 IP（含 SSH 登入狀態）、域名 DNS 管理（重置網域） |
@@ -48,6 +48,7 @@
 - **規則驅動 DNS**：規則變更（`regen_smart`）後自動 `update-mosdns-rules.sh --offline` 重建 DNS 名單。IP 類規則（IP-CIDR、GEOIP）只對已進入伺服器的流量有效，`FINAL` 無作用。
 - **重置網域**：憑證用通配符（不洩漏具體名稱到憑證透明度日誌），解析用具體 A 記錄（TTL 60、僅 DNS），重置時刪除舊名稱指向本機的 A 記錄；真正讓舊名稱「立即」失效的是 dot-gate 的 SNI 檢查。
 - **managed 防火牆**：修改客戶端網段時只就地改寫 `/etc/nftables.conf` 中 80/443 兩行放行規則（`refresh_managed_client_rules`），不整份覆寫。主機上有其他服務（轉發、代理）時不要用 managed。
+- **地區白名單（`--geo-allow`）**：只支援 managed nft。SSH、853、8111 的新 TCP 連線只接受港澳台（APNIC 登記國家，IPv4＋IPv6）與客戶端網段。規則全在 `/etc/5gpn/geo-allow.nft`（集合 `geo_allow4/6`＋鏈 `geo_gate`，先宣告再 flush，可單獨重載）；`/etc/nftables.conf` 只就地加 `include` 與 `ct state` 後的 `jump geo_gate`，關閉時鏈為空、掛鉤保留，開關與更新都不重載整份規則。客戶端網段在產生時併入集合，`set_client_cidrs` 會同步。下載驗 MD5、記錄數、縮水一半以上拒絕，失敗保留舊名單；`5gpn-geo-update.timer` 每日更新。開啟前檢查 `SSH_CONNECTION` 與 `who --ips` 來源，不在範圍內拒絕（`PGW_GEO_FORCE=1` 強制）。限制：登記在其他 RIR 的港台澳雲端 IP 會被擋（例如伺服器本身的 IP 不在名單內，本機連線走 lo 不受影響）。
 - **白名單是安全邊界**：80/443 只對客戶端網段開放；`0.0.0.0/0`（含合併後等於它的清單）會被拒絕。
 - 升級（`--upgrade`）會重新產生 `pgw-exit.nft`、啟用 dot-gate；失敗回滾時先停 dot-gate 再還原 mosdns。
 
@@ -60,6 +61,8 @@
 - macOS 的 bash 是 3.2：不支援 `${var^^}`、`${var,,}`；`sed -i` 需要 `-i ''`；沒有 `timeout`（可用 `perl -e 'alarm 60; exec @ARGV' 指令`）。
 - 測試不可讀取主機真實設定：`test_dns_transaction.py` 已用 `PGW_RULES_FILE`、`PGW_POLICY_MAP` 等環境變數隔離。
 - awk 擷取函式（`/^name\(\)/,/^}/`）遇到 heredoc 或 Python 內有行首 `}` 時會截斷，改用「擷取到下一個函式為止」。
+- `set -o pipefail` 下 `nft list … | grep -q` 可能因 SIGPIPE 回傳失敗：先把輸出存進變數再比對。
+- 需要真實 nft 行為的測試，在 Linux/root 下用拋棄式 network namespace（veth 兩端各一個 netns）載入規則並送封包，不碰主機防火牆（見 `tests/test_geo_allow_policy.sh`）。
 
 ## 踩過的坑（排查時先想到這些）
 

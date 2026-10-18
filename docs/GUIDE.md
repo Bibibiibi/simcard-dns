@@ -129,6 +129,20 @@ sudo /opt/5gpn/bin/5gpn-ctl --set-policy Netflix hk
 
    效果：80/443 和 UDP 443 只放行客户端网段；853、8111 和检测到的 SSH 端口对所有人开放；其余入站全部拒绝，规则开机自动加载。原规则备份为 `/etc/nftables.conf.pgw-backup`。853 不建议限制为客户端网段：Android 私人 DNS 在 Wi-Fi 下同样强制使用，限制后连 Wi-Fi 会无法解析。
 
+   **可选：地区限制**（仅 managed nftables 防火墙）：让 SSH、853 和 8111 只接受香港、澳门、台湾的 IP 与客户端网段连入，其他地区的新连接直接丢弃。地区网段取自 APNIC 每日发布的分配数据（按登记国家，校验 MD5 与记录数），每天自动更新；下载或校验失败时保留旧名单。客户端网段始终放行。
+
+   ```bash
+   sudo /opt/5gpn/bin/5gpn-ctl --geo-allow on       # 开启（首次会下载名单）
+   sudo /opt/5gpn/bin/5gpn-ctl --geo-allow status   # 状态、名单日期、已拦截包数
+   sudo /opt/5gpn/bin/5gpn-ctl --geo-allow update   # 立即更新名单
+   sudo /opt/5gpn/bin/5gpn-ctl --geo-allow off      # 关闭
+   ```
+
+   Telegram Bot「🛡 白名单」页也有开关和「更新地区名单」按钮。开启前会检查当前 SSH 会话和已登录会话的来源 IP，不在允许范围内就拒绝开启（`PGW_GEO_FORCE=1` 可强制）。注意：
+   - 人在其他地区用当地网络时无法 SSH，手机连当地 Wi‑Fi 时私人 DNS 也会连不上；用白名单运营商的流量漫游不受影响。被挡在外面时用 Bot 关闭，或用 VPS 商的网页控制台。
+   - 名单按登记国家而不是实际位置：在港台澳使用、但向其他 RIR 登记的地址（常见于云服务器）会被拦截。
+   - 只限制新 TCP 连接，ICMP 和 80/443、UDP 443 不受影响（后者本来就只对客户端网段开放）。
+
 5. **手机设置**：Android 私人 DNS 或 iOS 描述文件按[客户端配置](../README.md#客户端配置)填写即可，手机上不用安装代理软件。
 
 注意事项：

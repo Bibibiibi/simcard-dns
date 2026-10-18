@@ -325,6 +325,10 @@ Options:
                  Allowlist every announced IPv4 prefix of an ASN (RIPEstat).
   --del-client-asn <ASN>
                  Remove an ASN's prefixes, keeping other ASNs and manual CIDRs.
+  --geo-allow on|off|update|status
+                 Regional allowlist (managed nftables firewall only): accept
+                 new SSH/853/8111 connections only from HK/MO/TW address space
+                 (APNIC, refreshed daily) and the client networks.
   --list-exits   List configured egress exits and which one is active
   --check-exits  Test reachability of each exit's upstream node (UP/DOWN)
   --add-exit <name> [wg.conf | proxy-uri]
@@ -523,7 +527,7 @@ upgrade_code() (
         /var/lib/5gpn-quic/remote-dns /usr/local/bin/update-mosdns-rules.sh /usr/local/bin/mosdns
         /etc/systemd/system/quic-proxy.service /etc/systemd/system/5gpn-mihomo@.service
         /etc/systemd/system/dot-gate.service
-        /etc/5gpn/pgw-exit.nft
+        /etc/5gpn/pgw-exit.nft "$GEO_NFT"
         /etc/letsencrypt/renewal-hooks/deploy/99-reload-mosdns.sh)
     local active=() units=(mosdns dot-gate sniproxy quic-proxy wa-shim 5gpn-tgbot 5gpn-mihomo@smart)
     for unit in "${units[@]}"; do
@@ -608,6 +612,13 @@ upgrade_code() (
     # exclusion): regenerate and reload it so fixes reach upgraded hosts.
     upgrade_stage=egress-rules
     apply_pgw_exit_rules
+    # Regional allowlist: re-render offline with the current generator.
+    if [[ -f "$GEO_NFT" ]]; then
+        upgrade_stage=geo-allow
+        write_geo_allow_nft
+        load_geo_allow_nft
+        [[ "$(geo_conf_get GEO_ALLOW off)" != on ]] || install_geo_update_timer
+    fi
     upgrade_stage=renew-hook
     mkdir -p /etc/letsencrypt/renewal-hooks/deploy
     install -m 0755 "${LIB_DIR}/renew-hook.sh" /etc/letsencrypt/renewal-hooks/deploy/99-reload-mosdns.sh
@@ -747,6 +758,10 @@ case "${1:-}" in
     --del-client-asn)
         check_root
         del_client_asn "${2:-}"
+        ;;
+    --geo-allow)
+        check_root
+        geo_allow_cmd "${2:-status}"
         ;;
     --setup-whatsapp)
         check_root

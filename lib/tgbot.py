@@ -1946,9 +1946,16 @@ def allowlist_view(notice=""):
     if others:
         shown = " ".join(others[:6]) + (" …" if len(others) > 6 else "")
         lines.append("• 手动网段 %d 段：<code>%s</code>" % (len(others), html.escape(shown)))
+    geo = geo_status()
+    lines += ["", geo_summary(geo)]
     rows = [[{"text": "🗑 删除 %s %s" % (asn, _short_button_text(holder, 24)),
               "callback_data": "asndel:%s" % asn}] for asn, holder, _ in asns]
     rows.append([{"text": "➕ 添加 ASN", "callback_data": "asn:add"}])
+    if geo and geo.get("state") == "on":
+        rows.append([{"text": "🌏 关闭地区限制", "callback_data": "geo:off"},
+                     {"text": "🔄 更新地区名单", "callback_data": "geo:update"}])
+    elif geo:
+        rows.append([{"text": "🌏 开启地区限制", "callback_data": "geo:on"}])
     rows.append([{"text": "« 返回", "callback_data": "menu:main"}])
     return "\n".join(lines), rows
 
@@ -1994,6 +2001,59 @@ def op_del_asn(asn):
     ok, out = run2(["bash", MGMT, "--del-client-asn", asn], timeout=300)
     return ("✅ 已删除 <b>%s</b>，DNS 和防火墙已更新。" % html.escape(asn) if ok
             else "❌ <b>删除 %s 失败</b>\n%s" % (html.escape(asn), html.escape(_reason(out))))
+
+
+# ---- regional allowlist (geo gate) -----------------------------------------
+GEO_COUNTRY_NAMES = {"HK": "香港", "MO": "澳门", "TW": "台湾"}
+GEO_ACTIONS = {"on": ("开启地区限制", 300), "off": ("关闭地区限制", 120), "update": ("更新地区名单", 300)}
+
+
+def geo_status():
+    """dict from --geo-allow status, or None when it cannot be read."""
+    ok, out = run2(["bash", MGMT, "--geo-allow", "status"], timeout=60)
+    if not ok:
+        return None
+    info = {}
+    for line in out.splitlines():
+        key, sep, value = line.partition("\t")
+        if sep:
+            info[key] = value
+    return info if "state" in info else None
+
+
+def geo_countries(geo):
+    codes = [c for c in (geo.get("countries") or "").split(",") if c]
+    return "、".join(GEO_COUNTRY_NAMES.get(c, c) for c in codes) or "?"
+
+
+def geo_summary(geo):
+    if geo is None:
+        return "🌏 地区限制：读取状态失败"
+    names = html.escape(geo_countries(geo))
+    if geo.get("state") != "on":
+        return "🌏 地区限制：<b>未开启</b>\n开启后 SSH、DoT 853 和 iOS 描述文件 8111 只接受%s和白名单网段连入。" % names
+    day = geo.get("updated", "")
+    day = "%s-%s-%s" % (day[:4], day[4:6], day[6:8]) if len(day) == 8 and day.isdigit() else day
+    state = "生效中" if geo.get("active") == "yes" else "⚠️ 已开启，但防火墙里没有生效"
+    return ("🌏 地区限制：<b>已开启</b>（%s）\n端口 %s 只接受%s和白名单网段连入\n"
+            "名单日期 %s：IPv4 %s 段、IPv6 %s 段；已拦截 %s 个连接包"
+            % (state, html.escape(geo.get("ports", "-").replace(",", "/")), names, html.escape(day),
+               html.escape(geo.get("v4", "?")), html.escape(geo.get("v6", "?")), html.escape(geo.get("blocked", "0"))))
+
+
+def geo_confirm_on():
+    return ("确认开启地区限制？\n\n开启后，SSH、DoT 853 和 iOS 描述文件 8111 只接受香港、澳门、台湾的 IP 和白名单网段连入，名单每天自动更新。\n\n"
+            "⚠️ 你在其他地区（例如内地、日本）用当地网络时将无法 SSH 登录；手机连当地 Wi‑Fi 时私人 DNS 也会连不上"
+            "（用白名单运营商的流量漫游不受影响）。被挡在外面时，可以在这里关闭，或使用 VPS 商的网页控制台。",
+            [[{"text": "✅ 确认开启", "callback_data": "geook:on"},
+              {"text": "« 返回", "callback_data": "menu:allow"}]])
+
+
+def op_geo(action):
+    label, timeout = GEO_ACTIONS[action]
+    ok, out = run2(["bash", MGMT, "--geo-allow", action], timeout=timeout)
+    return ("✅ 已%s。" % label if ok
+            else "❌ <b>%s失败</b>\n%s" % (label, html.escape(_reason(out))))
 
 
 def main_menu_text():
@@ -2440,6 +2500,12 @@ def handle_callback(cb):
         asn = parse_asn(data[9:])
         edit(cb, "⏳ 正在删除 <b>%s</b>，更新 DNS 和防火墙…" % asn)
         allowlist_async(cb, lambda: op_del_asn(asn))
+    elif data == "geo:on":
+        edit(cb, *geo_confirm_on())
+    elif data in ("geook:on", "geo:off", "geo:update"):
+        action = data.split(":", 1)[1] if data != "geook:on" else "on"
+        edit(cb, "⏳ 正在%s…" % GEO_ACTIONS[action][0])
+        allowlist_async(cb, lambda: op_geo(action))
     elif data == "cancel:dot":
         PENDING.pop(chat_id, None)
         edit(cb, op_dot_status(), dot_menu())

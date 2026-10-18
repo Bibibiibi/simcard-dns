@@ -354,6 +354,8 @@ set_client_cidrs() {
     fi
     rm -rf "$backup_dir"
     ok "Client CIDRs updated: $cidrs"
+    refresh_geo_allow_clients \
+        || warn "Regional allowlist could not pick up the new client list; run $0 --geo-allow update"
     # A full managed re-apply must be requested explicitly, but a host already
     # running the managed ruleset gets its two client allow lines updated in
     # place so the firewall never disagrees with DNS.
