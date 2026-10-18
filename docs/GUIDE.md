@@ -35,7 +35,16 @@ remote-dns: on
 
 ## 智能分流
 
-`smart` 出口可把不同域名 / 规则集分配到不同出口。策略可以是已配置的出口名、`direct` 或 `block`。
+**分流规则同时决定哪些流量经过服务器**：客户端网段的手机只有访问规则里列出的域名时，DNS 才返回服务器 IP、流量进入服务器并按规则选择出口；**没有命中任何规则的域名一律正常解析，手机通过自己的网络直连**（例如 CTMO 卡直接从澳门出去）。
+
+| 规则目标 | 效果 |
+| --- | --- |
+| 出口名（如 `tw`、`us`） | 经服务器，从该出口出去 |
+| `local` | 经服务器，从服务器本机 IP 出去 |
+| `direct` | 不经服务器，手机直连（与没写规则相同，可用来给某个规则集开例外） |
+| `block` | DNS 直接拒绝 |
+
+分类（导入规则时的分组名）按分类映射解析成上面的目标。DNS 只能按域名判断，所以 `DOMAIN`、`DOMAIN-SUFFIX`、`DOMAIN-KEYWORD`、`GEOSITE` 和域名类规则集会决定是否经过服务器；`IP-CIDR`、`GEOIP` 只对已经进入服务器的流量生效，`FINAL` 不再起作用（未命中即直连）。`.mrs` 规则集会改读同目录的 `.list` 文本版本（MetaCubeX meta-rules-dat 均提供），找不到时该规则集只在服务器出口层生效。规则变化后 DNS 名单会自动重建；远程规则集在 `--update-rules` 时刷新。
 
 ```bash
 cat > rules.conf <<'EOF'
@@ -55,6 +64,7 @@ sudo /opt/5gpn/bin/5gpn-ctl --set-exit smart
 
 ```bash
 sudo /opt/5gpn/bin/5gpn-ctl --add-rule 'DOMAIN-SUFFIX,openai.com,us'
+sudo /opt/5gpn/bin/5gpn-ctl --add-rule 'GEOSITE,openai,local'      # 经服务器本机 IP 出去
 sudo /opt/5gpn/bin/5gpn-ctl --add-ruleset 'https://example.com/openai.mrs' us
 ```
 
@@ -98,6 +108,17 @@ sudo /opt/5gpn/bin/5gpn-ctl --set-policy Netflix hk
 
    首次安装可直接设置 `CLIENT_CIDRS="203.0.113.0/24 198.51.100.0/22"`。
 
+   也可以按运营商的 ASN 整体加入或删除（网段来自 RIPEstat 公开路由数据，只取 IPv4）。默认的 CTMO 网段登记为 `AS136167`；删除某个 ASN 只移除它自己的网段，其他 ASN 和手动网段保留：
+
+   ```bash
+   sudo /opt/5gpn/bin/5gpn-ctl --lookup-client-asn AS63527   # 只查询，不修改
+   sudo /opt/5gpn/bin/5gpn-ctl --add-client-asn AS63527
+   sudo /opt/5gpn/bin/5gpn-ctl --list-client-asns
+   sudo /opt/5gpn/bin/5gpn-ctl --del-client-asn AS63527
+   ```
+
+   Telegram Bot 主菜单的「🛡 白名单」提供同样的功能：添加前会显示运营商名称和网段数量，确认后才生效，删除也需要确认。
+
 4. **放行端口**：默认 `preserve` 模式不改主机防火墙，命令会提示需要放行的端口。请在主机防火墙**和云厂商安全组**中，只对这些网段放行 TCP `80/443` 和 UDP `443`；不要对全网开放。`FIREWALL_MODE=auto` 会自动追加放行规则，但修改网段后不会删除旧网段的规则，需要自行清理。
 
    **注意**：如果主机没有防火墙（INPUT 全部放行），80/443 对所有人开放，任何知道服务器 IP 的人都能直接把它当开放代理用，扫描器很快就会找上门。没有其他防火墙需求时，推荐让项目接管 INPUT：
@@ -117,6 +138,25 @@ sudo /opt/5gpn/bin/5gpn-ctl --set-policy Netflix hk
 - 连接 Wi-Fi 时，查询来自家里的宽带 IP，不在客户端网段内，会自动按普通公网来源解析，不会把流量送进代理。
 - 当前出口（WireGuard / URI 节点 / smart）对这些客户端同样生效。发往客户端网段的回包不会被打标进出口隧道。
 
+## 一键重置域名（Cloudflare）
+
+域名托管在 Cloudflare 时，可以随时把私人 DNS 换成新的随机域名，旧域名立即失效（例如域名泄露或定期更换）。
+
+1. 在 Cloudflare 创建 API Token：模板选「编辑区域 DNS」，区域资源只选你的域名（只需要 Zone → DNS → Edit 权限）。
+2. 在服务器上接入（Token 输入时不显示，不要写在命令行参数里）：
+
+   ```bash
+   sudo /opt/5gpn/bin/5gpn-ctl --setup-cloudflare
+   ```
+
+   程序会根据当前域名自动找到 Cloudflare 区域，并通过 DNS 验证签发通配符证书 `*.dns.<你的域名>`，之后自动续期（不需要开放 80 端口）。
+
+3. 重置：Telegram Bot「🛠️ 域名 DNS 管理 → 🔄 重置域名」，或执行 `sudo /opt/5gpn/bin/5gpn-ctl --reset-domain`。会生成 `<20 位随机>.dns.<你的域名>`，在 Cloudflare 添加解析（仅 DNS，不开代理），切换私人 DNS 并删除旧域名指向本机的解析；任何一步失败都会回滚。
+
+用通配符证书的好处：重置不需要重新签证书，新域名也不会出现在公开的证书透明度日志里。
+
+**旧域名立即失效**：公网 853 由 DoT 入口守门服务 `dot-gate` 接管，只放行 TLS 握手中 SNI 等于当前域名的连接，再原样转给只监听 `127.0.0.1:8853` 的 mosdns；旧域名、其他名字或不带 SNI（扫描器）的连接直接断开。重置后约 2 秒内，仍使用旧域名的已建立连接也会被切断，即使客户端缓存了服务器 IP。客户端网段的判断由 `dot-gate` 完成（网段内以 `127.0.0.2`、网段外以 `127.0.0.3` 连接 mosdns）。重置后所有设备都要更新：Android 修改私人 DNS 域名，iPhone 重新安装描述文件（Bot 会给出二维码）。
+
 ## Telegram Bot
 
 ```bash
@@ -124,6 +164,8 @@ sudo /opt/5gpn/bin/5gpn-ctl --setup-tgbot
 ```
 
 按提示输入 Bot Token 和管理员数字 ID。可先通过 Telegram 的 ID 查询机器人获取自己的 ID；启用后也可向本 Bot 发送 `/id` 核对。不要公开 Token。已有配置会用于后续设置。
+
+主菜单「🛡 白名单」可按 ASN 添加或删除客户端白名单（见[手机卡接入](#手机卡接入)）。
 
 命令：`/start` 打开面板、`/status` 状态、`/clients` 当前连入 IP（同主菜单 👥 按钮，标出是否在客户端网段内）、`/exits` 出口、`/rules` 分流、`/cancel` 取消输入、`/id` 查 ID。
 
@@ -222,7 +264,7 @@ sudo /opt/5gpn/bin/5gpn-ctl --update-rules
 
 - 客户端网段（运营商公网出口网段，默认 CTMO）的手机把私人 DNS（DoT）指向网关。
 - ChinaList 域名（所有来源）走国内 DNS 竞速代理（4 路 UDP 并发 + TCP fallback + 海外兜底含 `22.22.22.22`），保持本地访问体验。
-- 客户端网段来源非 ChinaList 的 A 查询返回服务器 IP，流量进入 TCP/QUIC 代理。
+- 客户端网段来源只有命中分流规则（含规则集、GEOSITE）的 A 查询返回服务器 IP，流量进入 TCP/QUIC 代理并按规则选择出口；规则目标为 `block` 的直接拒绝；其余域名正常解析（ChinaList 走国内 DNS，其他走海外 DNS），手机直连。
 - 其他来源：被墙域名不劫持，正常海外解析；其他域名也正常海外解析。
 - wa-shim / sniproxy / quic-proxy 负责 WhatsApp Noise、SNI/Host 和 QUIC 转发，出站由当前出口控制。
 - 所有来源的 AAAA 查询返回 NOERROR/NODATA，保持现有 IPv4-only 透明代理策略，避免 IPv6 绕过代理。

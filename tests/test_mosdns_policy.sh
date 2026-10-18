@@ -26,15 +26,26 @@ has "$template" 'exec: goto remote_resolve' \
 has "$template" 'exec: reject 0' \
     "AAAA queries must be globally rejected (IPv4-only policy)"
 has "$template" 'exec: black_hole __SERVER_IP__' \
-    "private overseas A queries must resolve to the gateway"
+    "rule-matched A queries must resolve to the gateway"
+has "$template" '/etc/mosdns/rule-domains.txt' "routing-rule domains must feed DNS"
+has "$template" '/etc/mosdns/rule-block.txt' "block-target rule domains must feed DNS"
 [[ "$(grep -c 'exec: accept' "${root}/lib/mosdns.yaml.template")" -ge 2 ]] \
     || fail "sequence responses must terminate before normal forwarding"
 has "$template" 'qname $china_domains' \
     "ChinaList domains must retain domestic resolution"
 
-china_line=$(grep -n 'qname \$china_domains' "${root}/lib/mosdns.yaml.template" | head -n1 | cut -d: -f1)
-spoof_line=$(grep -n 'exec: black_hole __SERVER_IP__' "${root}/lib/mosdns.yaml.template" | tail -n1 | cut -d: -f1)
-[[ "$china_line" -lt "$spoof_line" ]] || fail "ChinaList matching must run before default private A spoofing"
+# Only domains named by a routing rule reach the gateway; every other query
+# from a client network resolves normally (direct connection).
+proxy_seq="$(sed -n '/- tag: proxy_client/,/- tag: other_client/p' "${root}/lib/mosdns.yaml.template")"
+[[ "$proxy_seq" == *'qname $rule_domains'* ]] || fail "client networks must hijack routing-rule domains"
+[[ "$proxy_seq" == *'qname $rule_block_domains'* ]] || fail "block-target rule domains must be refused"
+[[ "$proxy_seq" != *'qname $gfw_domains'* ]] || fail "GFWList must no longer decide what is proxied"
+[[ "$(grep -c 'black_hole' <<< "$proxy_seq")" -eq 2 ]] \
+    || fail "only override-proxy and rule domains may resolve to the gateway (no catch-all)"
+rule_line=$(grep -n 'qname \$rule_domains' <<< "$proxy_seq" | cut -d: -f1)
+china_line=$(grep -n 'qname \$china_domains' <<< "$proxy_seq" | cut -d: -f1)
+[[ "$rule_line" -lt "$china_line" ]] || fail "a routing rule must win over ChinaList"
+[[ "$(tail -n 3 <<< "$proxy_seq")" == *'goto remote_resolve'* ]] || fail "unmatched domains must resolve normally"
 
 [[ "$(grep -c 'type: fallback' "${root}/lib/mosdns.yaml.template")" -ge 2 ]] \
     || fail "remote and local DNS paths must have fallback plugins"

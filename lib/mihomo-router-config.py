@@ -171,12 +171,15 @@ def main():
     def target(policy):
         raw = policy.strip()
         low = raw.lower()
-        if low in ("direct", "direct-out", "dir"):
+        # "local" leaves through this server's own address. "direct" also maps
+        # to DIRECT here, but DNS never sends direct-rule domains to the
+        # gateway: clients reach those over their own connection.
+        if low in ("direct", "direct-out", "dir", "local"):
             return "DIRECT"
         if low in ("block", "reject", "reject-drop"):
             return "REJECT"
         resolved = policy_map.get(raw, raw)
-        if resolved.lower() in ("direct", "dir"):
+        if resolved.lower() in ("direct", "dir", "local"):
             return "DIRECT"
         if resolved.lower() in ("block", "reject"):
             return "REJECT"

@@ -34,6 +34,8 @@ sudo /opt/5gpn/bin/5gpn-ctl --status              # 查看状态
 sudo /opt/5gpn/bin/5gpn-ctl --update-rules        # 更新 GFWList/ChinaList 并重载 mosdns
 sudo /opt/5gpn/bin/5gpn-ctl --renew-cert          # 续期证书
 sudo /opt/5gpn/bin/5gpn-ctl --set-dot-domain dns.example.com
+sudo /opt/5gpn/bin/5gpn-ctl --setup-cloudflare      # 接入 Cloudflare（通配符证书）
+sudo /opt/5gpn/bin/5gpn-ctl --reset-domain          # 一键换成新的随机域名
 sudo /opt/5gpn/bin/5gpn-ctl --set-dns "1.1.1.1 8.8.8.8" "223.5.5.5 119.29.29.29"
 sudo /opt/5gpn/bin/5gpn-ctl --set-client-cidrs "103.143.92.0/23 203.0.113.0/24"  # 客户端网段
 sudo /opt/5gpn/bin/5gpn-ctl -ios                  # 重新生成 iOS 描述文件和二维码
@@ -46,9 +48,9 @@ sudo /opt/5gpn/bin/5gpn-ctl --uninstall           # 卸载
 ## 功能与原理
 
 - **加密 DNS**：设备通过 DoT 连接服务器，国内域名优先使用国内 DNS。
-- **透明代理**：客户端网段内的手机访问非国内域名时，由服务器转发 TCP / QUIC 流量。
+- **透明代理**：客户端网段内的手机访问分流规则里列出的域名时，由服务器转发 TCP / QUIC 流量；其余直连。
 - **多种出口**：支持本机直出、WireGuard，以及 SOCKS5、SS、VMess、Trojan、VLESS、Hysteria2、TUIC、AnyTLS、HTTP 等节点。
-- **按需分流**：可按域名、IP 或规则集选择不同出口。
+- **按需分流**：只有分流规则命中的域名经过服务器，并按规则选择出口（节点 / 服务器本机 / 拒绝），未命中的直连。
 - **聊天管理**：通过 Telegram Bot 查看状态、切换出口、管理规则和 DNS。
 - **低内存适配**：内存不超过 1 GB 时自动减少资源占用。
 

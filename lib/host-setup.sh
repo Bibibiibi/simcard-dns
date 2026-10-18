@@ -501,6 +501,29 @@ EOF
     mkdir -p "$(dirname "$mark_file")" || return 1
     : > "$mark_file" || return 1
 }
+# Update only the client source sets in a managed /etc/nftables.conf (the two
+# 80/443 and UDP/443 allow lines), validate, then load. Returns 2 when the host
+# is not running the project's managed ruleset, so nothing was touched.
+refresh_managed_client_rules() {
+    local conf="${PGW_NFT_CONF:-/etc/nftables.conf}" set="${1// /, }" tmp
+    [[ -n "${1:-}" && -f "$conf" ]] || return 2
+    grep -q 'include "/etc/5gpn/pgw-exit.nft"' "$conf" || return 2
+    grep -qE 'ip saddr \{[^}]*\} tcp dport \{ 80, 443 \} accept' "$conf" || return 2
+    command -v nft >/dev/null 2>&1 || return 1
+    tmp="$(mktemp "${conf}.pgw.XXXXXX")" || return 1
+    sed -E "s#ip saddr \\{[^}]*\\} (tcp dport \\{ 80, 443 \\} accept|udp dport 443 accept)#ip saddr { ${set} } \\1#" \
+        "$conf" > "$tmp" || { rm -f "$tmp"; return 1; }
+    if ! nft -c -f "$tmp" >/dev/null 2>&1; then
+        rm -f "$tmp"
+        return 1
+    fi
+    if ! install -m 755 "$tmp" "$conf"; then
+        rm -f "$tmp"
+        return 1
+    fi
+    rm -f "$tmp"
+    nft -f "$conf" >/dev/null 2>&1
+}
 firewall_cleanup_on_uninstall() {
     # Called by do_uninstall BEFORE /etc/5gpn is removed. managed mode
     # writes /etc/nftables.conf with include "/etc/5gpn/pgw-exit.nft";
@@ -578,8 +601,13 @@ open_cert_http_port() {
             warn "Failed to temporarily open TCP/80 with iptables."
             return 1
         fi
+    elif ! command -v nft >/dev/null 2>&1 || ! nft list ruleset 2>/dev/null | grep -q 'hook input'; then
+        # A fresh host often has no firewall at all: nftables installed but no
+        # ruleset loaded, and no iptables. Nothing filters inbound traffic, so
+        # TCP/80 is already reachable and there is nothing to open.
+        info "No inbound firewall detected; TCP/80 is already reachable."
     else
-        warn "Cannot temporarily open TCP/80: neither nft nor iptables is available."
+        warn "Cannot temporarily open TCP/80: an nftables input chain exists outside 'inet filter' and iptables is unavailable."
         return 1
     fi
 }

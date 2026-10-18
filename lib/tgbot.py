@@ -27,6 +27,7 @@ import ipaddress
 import json
 import os
 import re
+import signal
 import socket
 import subprocess
 import sys
@@ -417,16 +418,17 @@ def _busy_key_from_cb(cb):
     return (chat_id, mid)
 
 
-def edit_async(cb, text_fn, keyboard=None, mono=False):
+def edit_async(cb, text_fn, keyboard=None, mono=False, keyboard_fn=None):
     key = _busy_key_from_cb(cb)
     generation = _chat_generation(key[0])
 
     def go():
         try:
             text = text_fn()
+            kb = keyboard_fn() if keyboard_fn else keyboard
             with _GENERATION_LOCK:
                 if generation == _chat_generation(key[0]):
-                    edit(cb, text, keyboard, mono)
+                    edit(cb, text, kb, mono)
         finally:
             BUSY.discard(key)
 
@@ -566,19 +568,33 @@ def pre(text):
 # --------------------------------------------------------------------------- #
 # Operations (fixed argv, no shell)
 # --------------------------------------------------------------------------- #
+def _run_group(argv, timeout, inp=None):
+    """Run argv in its own process group; on timeout kill the whole group.
+
+    subprocess.run(timeout=...) only kills the direct child, so helpers it
+    spawned (e.g. a curl download under 5gpn-ctl) kept running as orphans
+    and competed with the user's retry.
+    """
+    p = subprocess.Popen(argv, stdin=subprocess.PIPE if inp is not None else None,
+                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                         text=True, start_new_session=True)
+    try:
+        out, _ = p.communicate(input=inp, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        p.communicate()
+        raise
+    return p.returncode, out or ""
+
+
 def run(argv, timeout=120, inp=None):
     try:
-        p = subprocess.run(
-            argv,
-            input=inp,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            timeout=timeout,
-        )
-        out = p.stdout or ""
-        if p.returncode != 0:
-            out += "\n[exit code %d]" % p.returncode
+        rc, out = _run_group(argv, timeout, inp)
+        if rc != 0:
+            out += "\n[exit code %d]" % rc
         return out
     except subprocess.TimeoutExpired:
         return "[timeout after %ds]" % timeout
@@ -605,9 +621,8 @@ def _strip_ansi(s):
 def run2(argv, timeout=120, inp=None):
     """Run a command; return (ok, stripped_output)."""
     try:
-        p = subprocess.run(argv, input=inp, stdout=subprocess.PIPE,
-                           stderr=subprocess.STDOUT, text=True, timeout=timeout)
-        return p.returncode == 0, _strip_ansi(p.stdout or "")
+        rc, out = _run_group(argv, timeout, inp)
+        return rc == 0, _strip_ansi(out)
     except subprocess.TimeoutExpired:
         return False, "执行超时（%ds）" % timeout
     except FileNotFoundError:
@@ -645,6 +660,7 @@ def _exit_ip():
 # (unit, friendly label) shown on the status card.
 STATUS_ITEMS = [
     ("mosdns", "mosdns"),
+    ("dot-gate", "DNS 入口守门"),
     ("sniproxy", "sniproxy"),
     ("quic-proxy", "quic-proxy"),
     ("5gpn-ios-profile.socket", "iOS 描述文件"),
@@ -737,6 +753,7 @@ def _established():
     return n
 
 
+MIHOMO_BIN = "/opt/5gpn/bin/mihomo"
 TCP_TABLES = ("/proc/net/tcp", "/proc/net/tcp6")
 CLIENT_CIDRS_FILE = "/etc/mosdns/.client_cidrs"
 CLIENT_PORT_LABELS = {853: "DNS", 443: "代理", 80: "代理", 8111: "iOS", 22: "SSH"}
@@ -1075,7 +1092,10 @@ def op_add_exit(name, payload):
     if not is_uri and not is_wg:
         return ("无法识别。请发送一段 WireGuard 配置（含 [Interface]/[Peer]），"
                 "或一个 ss:// / vmess:// / trojan:// / vless:// / hysteria2:// / tuic:// / anytls:// / socks5:// / http:// URI。")
-    ok, out = run2(["bash", MGMT, "--add-exit", name], inp=payload, timeout=180)
+    # The first URI exit downloads the mihomo engine; on slow links that alone
+    # can take minutes, so do not give up (and kill it) after 3 minutes.
+    timeout = 180 if (is_wg or os.path.exists(MIHOMO_BIN)) else 1800
+    ok, out = run2(["bash", MGMT, "--add-exit", name], inp=payload, timeout=timeout)
     if ok:
         m = re.search(r"type:\s*(\w+)", out)
         return ("✅ 出口 <b>%s</b> 已添加（%s）\n在「🌐 出口」里点它即可切换。"
@@ -1292,7 +1312,8 @@ def _rule_target_buttons(prefix):
             row = []
     if row:
         rows.append(row)
-    rows.append([{"text": "🌍 直连", "callback_data": "%s:direct" % prefix},
+    rows.append([{"text": "🖥 服务器出口", "callback_data": "%s:local" % prefix},
+                 {"text": "🌍 直连(不经服务器)", "callback_data": "%s:direct" % prefix},
                  {"text": "🚫 拒绝", "callback_data": "%s:block" % prefix}])
     rows.append([{"text": "« 返回", "callback_data": "rules:add"}])
     return rows
@@ -1404,15 +1425,33 @@ def op_dot_status():
                   _read_file("/etc/mosdns/.overseas_dns") or "?")
     local_dns = (_read_file("/etc/mosdns/.local_dns") or "?")
     lines = [
-        "🛠️ <b>5GPN 管理</b>",
+        "🛠️ <b>域名 DNS 管理</b>",
         "当前域名：<code>%s</code>" % html.escape(domain),
     ]
+    zone = cloudflare_zone()
+    lines.append("Cloudflare：%s" % ("已接入（<code>%s</code>）" % html.escape(zone) if zone
+                                     else "未接入（服务器执行 <code>5gpn-ctl --setup-cloudflare</code>）"))
     lines.extend([
         "国际 DNS：<code>%s</code>" % html.escape(remote_dns),
         "国内 DNS：<code>%s</code>" % html.escape(local_dns),
         _cert_status_line(),
     ])
     return "\n".join(lines)
+
+
+def op_reset_domain():
+    """(text, keyboard) after --reset-domain."""
+    ok, out = run2(["bash", MGMT, "--reset-domain"], timeout=600)
+    m = re.search(r"^NEW_DOMAIN=(\S+)$", out, re.M)
+    if not ok or not m:
+        return ("❌ <b>重置域名失败</b>，原域名保持不变。\n%s" % html.escape(_reason(out)), dot_menu())
+    new = m.group(1)
+    text = ("✅ <b>域名已重置</b>\n\n新域名：<code>%s</code>\n旧域名的解析已删除，旧域名不再可用。\n\n"
+            "请更新所有设备：\n"
+            "• Android：设置 → 私人 DNS，改成上面的新域名\n"
+            "• iPhone：点下面的「📱 iOS 二维码」重新安装描述文件" % html.escape(new))
+    return text, [[{"text": "📱 iOS 二维码", "callback_data": "act:ios"}],
+                  [{"text": "« 返回", "callback_data": "menu:dot"}]]
 
 
 def op_set_dot_domain(domain):
@@ -1866,6 +1905,97 @@ def ios_back(cb):
 # --------------------------------------------------------------------------- #
 # Keyboards
 # --------------------------------------------------------------------------- #
+# ---- client allowlist by ASN --------------------------------------------
+ASN_RE = re.compile(r"^(?:AS)?\s*(\d{1,10})$", re.I)
+BIG_NETWORK_ADDRESSES = 1_000_000
+
+
+def parse_asn(text):
+    m = ASN_RE.match((text or "").strip())
+    return "AS%d" % int(m.group(1)) if m and int(m.group(1)) > 0 else None
+
+
+def allowlist_entries():
+    """((asns, other_cidrs), error) from --list-client-asns."""
+    ok, out = run2(["bash", MGMT, "--list-client-asns"], timeout=60)
+    if not ok:
+        return None, out
+    asns, others = [], []
+    for line in out.splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 3 and parts[0] == "OTHER":
+            others = parts[2].split()
+        elif len(parts) >= 3 and parse_asn(parts[0]):
+            asns.append((parts[0], parts[1], parts[2]))
+    return (asns, others), ""
+
+
+def allowlist_view(notice=""):
+    data, error = allowlist_entries()
+    if data is None:
+        return "❌ 读取白名单失败\n%s" % html.escape(_reason(error)), back_kb("menu:main")
+    asns, others = data
+    lines = ([notice, ""] if notice else []) + [
+        "<b>🛡 客户端白名单</b>",
+        "只有这些网段的设备会被引到服务器，并能使用 80/443 代理。", ""]
+    if asns:
+        for asn, holder, count in asns:
+            lines.append("• <b>%s</b>  %s（%s 段）" % (html.escape(asn), html.escape(holder), html.escape(count)))
+    else:
+        lines.append("（还没有按 ASN 添加的白名单）")
+    if others:
+        shown = " ".join(others[:6]) + (" …" if len(others) > 6 else "")
+        lines.append("• 手动网段 %d 段：<code>%s</code>" % (len(others), html.escape(shown)))
+    rows = [[{"text": "🗑 删除 %s %s" % (asn, _short_button_text(holder, 24)),
+              "callback_data": "asndel:%s" % asn}] for asn, holder, _ in asns]
+    rows.append([{"text": "➕ 添加 ASN", "callback_data": "asn:add"}])
+    rows.append([{"text": "« 返回", "callback_data": "menu:main"}])
+    return "\n".join(lines), rows
+
+
+def allowlist_async(cb, action=None):
+    """Optionally run action() (returns a notice), then show the allowlist."""
+    view = {}
+
+    def text_fn():
+        notice = action() if action else ""
+        text, view["kb"] = allowlist_view(notice)
+        return text
+
+    edit_async(cb, text_fn, keyboard_fn=lambda: view.get("kb"))
+
+
+def op_lookup_asn(asn):
+    """(confirmation text, keyboard) for adding an ASN."""
+    ok, out = run2(["bash", MGMT, "--lookup-client-asn", asn], timeout=60)
+    parts = out.strip().splitlines()[-1].split("\t") if ok and out.strip() else []
+    if not ok or len(parts) < 4:
+        return ("❌ 查询 <b>%s</b> 失败\n%s" % (html.escape(asn), html.escape(_reason(out))),
+                [[{"text": "➕ 重新输入", "callback_data": "asn:add"}],
+                 [{"text": "« 返回", "callback_data": "menu:allow"}]])
+    _, holder, count, addrs = parts[:4]
+    big = int(addrs) >= BIG_NETWORK_ADDRESSES if addrs.isdigit() else False
+    text = ("确认把 <b>%s</b> 加入白名单？\n\n运营商：%s\n网段：%s 段，共 %s 个地址%s\n\n"
+            "加入后，这些网段内的设备查询分流规则里的域名会被引到服务器。"
+            % (html.escape(asn), html.escape(holder), html.escape(count),
+               "{:,}".format(int(addrs)) if addrs.isdigit() else html.escape(addrs),
+               "\n\n⚠️ 这是一个很大的网络，大量陌生设备也能使用你的代理，请确认 ASN 没有输错。" if big else ""))
+    return text, [[{"text": "✅ 确认添加", "callback_data": "asnok:%s" % asn},
+                   {"text": "✖ 取消", "callback_data": "menu:allow"}]]
+
+
+def op_add_asn(asn):
+    ok, out = run2(["bash", MGMT, "--add-client-asn", asn], timeout=300)
+    return ("✅ 已添加 <b>%s</b>，DNS 和防火墙已更新。" % html.escape(asn) if ok
+            else "❌ <b>添加 %s 失败</b>\n%s" % (html.escape(asn), html.escape(_reason(out))))
+
+
+def op_del_asn(asn):
+    ok, out = run2(["bash", MGMT, "--del-client-asn", asn], timeout=300)
+    return ("✅ 已删除 <b>%s</b>，DNS 和防火墙已更新。" % html.escape(asn) if ok
+            else "❌ <b>删除 %s 失败</b>\n%s" % (html.escape(asn), html.escape(_reason(out))))
+
+
 def main_menu_text():
     return "选择一个操作："
 
@@ -1875,9 +2005,10 @@ def main_menu():
         [{"text": "📊 状态", "callback_data": "act:status"},
          {"text": "🌐 出口管理", "callback_data": "menu:exits"}],
         [{"text": "📑 分流管理", "callback_data": "menu:rules"},
-         {"text": "🛠️ 5GPN 管理", "callback_data": "menu:dot"}],
+         {"text": "🛠️ 域名 DNS 管理", "callback_data": "menu:dot"}],
         [{"text": "👥 连入 IP", "callback_data": "act:clients"},
-         {"text": "📱 iOS 二维码", "callback_data": "act:ios"}],
+         {"text": "🛡 白名单", "callback_data": "menu:allow"}],
+        [{"text": "📱 iOS 二维码", "callback_data": "act:ios"}],
     ]
 
 
@@ -1956,7 +2087,8 @@ def policy_targets_menu(idx):
             row = []
     if row:
         rows.append(row)
-    rows.append([{"text": "🌍 直连", "callback_data": "ps:%d:direct" % idx},
+    rows.append([{"text": "🖥 服务器出口", "callback_data": "ps:%d:local" % idx},
+                 {"text": "🌍 直连(不经服务器)", "callback_data": "ps:%d:direct" % idx},
                  {"text": "🚫 拒绝", "callback_data": "ps:%d:block" % idx}])
     rows.append([{"text": "« 返回", "callback_data": "menu:policy"}])
     return rows
@@ -1998,9 +2130,21 @@ def exits_rename_menu():
     return rows
 
 
+CF_CONF_FILE = "/etc/5gpn/cloudflare.conf"
+
+
+def cloudflare_zone(path=CF_CONF_FILE):
+    for line in (_read_file(path) or "").splitlines():
+        if line.startswith("zone="):
+            return line[5:].strip()
+    return ""
+
+
 def dot_menu():
+    first = ({"text": "🔄 重置域名", "callback_data": "dot:reset"} if cloudflare_zone()
+             else {"text": "🌐 更改域名", "callback_data": "dot:domain"})
     return [
-        [{"text": "🌐 更改域名", "callback_data": "dot:domain"}],
+        [first],
         [{"text": "🌍 更改国际 DNS", "callback_data": "dot:dns_remote"}],
         [{"text": "🇨🇳 更改国内 DNS", "callback_data": "dot:dns_local"}],
         [{"text": "🔄 续期证书", "callback_data": "act:renew"}],
@@ -2036,7 +2180,11 @@ def process_add_exit_message(chat_id, message_id, payload, prompt_mid=None):
                            message_id=prompt_mid)
             return
         prompt_mid = upsert_console(
-            chat_id, "⏳ 正在后台添加 %d 个出口…%s" % (len(items), delete_warning),
+            chat_id, "⏳ 正在后台添加 %d 个出口…%s%s" % (
+                len(items),
+                "" if os.path.exists(MIHOMO_BIN) else
+                "\n首次添加节点需要先下载 mihomo 引擎（十几 MB），网络慢时可能需要几分钟，请耐心等待。",
+                delete_warning),
             message_id=prompt_mid)
         result = op_add_exit_batch(items)
         upsert_console(chat_id, result, exits_menu(), message_id=prompt_mid)
@@ -2169,6 +2317,23 @@ def handle_message(msg):
         PENDING[chat_id] = {"action": "rules_addset_target",
                             "ruleset_url": ruleset_url, "prompt_mid": mid}
         return
+    if state and state.get("action") == "asn_add":
+        prompt_mid = state.get("prompt_mid")
+        background(delete_message, chat_id, msg.get("message_id"))
+        asn = parse_asn(text)
+        if not asn:
+            upsert_console(chat_id, "格式不对，请发送 ASN 编号，例如 <code>AS63527</code> 或 <code>63527</code>。",
+                           cancel_kb("allow"), message_id=prompt_mid)
+            return
+        PENDING.pop(chat_id, None)
+        mid = upsert_console(chat_id, "⏳ 正在查询 <b>%s</b> 的网段…" % asn, message_id=prompt_mid)
+
+        def do_lookup():
+            result, kb = op_lookup_asn(asn)
+            upsert_console(chat_id, result, kb, message_id=mid)
+
+        background(do_lookup)
+        return
     if state and state.get("action") == "dot_domain":
         prompt_mid = state.get("prompt_mid")
         PENDING.pop(chat_id, None)
@@ -2254,6 +2419,27 @@ def handle_callback(cb):
     elif data == "cancel:exits":
         PENDING.pop(chat_id, None)
         edit(cb, "🌐 <b>出口管理</b>\n选择一个操作：", exits_menu())
+    elif data in ("menu:allow", "cancel:allow"):
+        PENDING.pop(chat_id, None)
+        edit(cb, "⏳ 正在读取白名单…")
+        allowlist_async(cb)
+    elif data == "asn:add":
+        PENDING[chat_id] = {"action": "asn_add", "prompt_mid": cb_mid}
+        edit(cb, "➕ <b>添加 ASN 白名单</b>\n\n发送运营商的 ASN 编号，例如 <code>AS63527</code> 或 <code>63527</code>。\n"
+                 "会先显示运营商名称和网段数量，确认后才加入。", cancel_kb("allow"))
+    elif data.startswith("asnok:") and parse_asn(data[6:]):
+        asn = parse_asn(data[6:])
+        edit(cb, "⏳ 正在添加 <b>%s</b>，更新 DNS 和防火墙…" % asn)
+        allowlist_async(cb, lambda: op_add_asn(asn))
+    elif data.startswith("asndel:") and parse_asn(data[7:]):
+        asn = parse_asn(data[7:])
+        edit(cb, "确认从白名单删除 <b>%s</b>？\n\n删除后，这个运营商网段内的设备不会再被引到服务器，也不能再使用 80/443 代理。" % asn,
+             [[{"text": "✅ 确认删除", "callback_data": "asndelok:%s" % asn},
+               {"text": "« 返回", "callback_data": "menu:allow"}]])
+    elif data.startswith("asndelok:") and parse_asn(data[9:]):
+        asn = parse_asn(data[9:])
+        edit(cb, "⏳ 正在删除 <b>%s</b>，更新 DNS 和防火墙…" % asn)
+        allowlist_async(cb, lambda: op_del_asn(asn))
     elif data == "cancel:dot":
         PENDING.pop(chat_id, None)
         edit(cb, op_dot_status(), dot_menu())
@@ -2324,7 +2510,7 @@ def handle_callback(cb):
         target = parts[1] if len(parts) == 2 else ""
         rule_type = state.get("rule_type") or ""
         value = state.get("rule_value") or ""
-        valid_targets = set(_targets()) | {"direct", "block"}
+        valid_targets = set(_targets()) | {"local", "direct", "block"}
         if state.get("action") != "rules_add_target" or not rule_type or not value:
             edit(cb, "规则输入已过期，请重新开始。", rule_type_menu())
         elif target not in valid_targets:
@@ -2348,7 +2534,7 @@ def handle_callback(cb):
         parts = data.split(":", 1)
         target = parts[1] if len(parts) == 2 else ""
         ruleset_url = state.get("ruleset_url") or ""
-        valid_targets = set(_targets()) | {"direct", "block"}
+        valid_targets = set(_targets()) | {"local", "direct", "block"}
         if state.get("action") != "rules_addset_target" or not ruleset_url:
             edit(cb, "规则集输入已过期，请重新开始。", back_kb("menu:rules"))
         elif target not in valid_targets:
@@ -2380,6 +2566,20 @@ def handle_callback(cb):
                  "当前出口：<b>%s</b>\n"
                  "请发送新的名称。" % html.escape(name),
                  cancel_kb("exits"))
+    elif data == "dot:reset":
+        edit(cb, "🔄 <b>重置域名</b>\n\n将生成一个新的随机域名并切换过去，<b>旧域名会立即失效</b>。\n"
+                 "重置后所有设备都要更新：Android 改私人 DNS，iPhone 重新安装描述文件。\n\n确定要重置吗？",
+             [[{"text": "✅ 确认重置", "callback_data": "dot:reset_ok"},
+               {"text": "« 返回", "callback_data": "menu:dot"}]])
+    elif data == "dot:reset_ok":
+        edit(cb, "⏳ 正在重置域名：创建解析、等待生效、切换服务，约需 1 分钟…")
+        view = {}
+
+        def do_reset():
+            text, view["kb"] = op_reset_domain()
+            return text
+
+        edit_async(cb, do_reset, keyboard_fn=lambda: view.get("kb"))
     elif data == "dot:domain":
         PENDING[chat_id] = {"action": "dot_domain", "prompt_mid": cb_mid}
         edit(cb,

@@ -10,6 +10,8 @@ GFWLIST_FILE="${BASE_DIR}/gfwlist.txt"
 CHINALIST_FILE="${BASE_DIR}/chinalist.txt"
 GFWLIST_EXTRA_FILE="${BASE_DIR}/gfwlist-extra-local.txt"
 DEFAULT_RULES_FILE="${PGW_DEFAULT_RULES_FILE:-/etc/5gpn/rules-default.conf}"
+USER_RULES_FILE="${PGW_RULES_FILE:-/etc/5gpn/rules.conf}"
+POLICY_MAP_FILE="${PGW_POLICY_MAP:-/etc/5gpn/policy-map.conf}"
 MOSDNS_TEMPLATE="${BASE_DIR}/config.yaml.template"
 MOSDNS_CONF="${BASE_DIR}/config.yaml"
 DEFAULT_REMOTE_DNS=("1.1.1.1" "8.8.8.8" "9.9.9.9")
@@ -54,62 +56,134 @@ append_local_gfwlist_extras() {
     done < "$GFWLIST_EXTRA_FILE" >> "$GFWLIST_FILE"
 }
 
-append_default_rule_domains() {
-    [[ -f "$DEFAULT_RULES_FILE" ]] || return 0
-    python3 - "$DEFAULT_RULES_FILE" >> "$GFWLIST_FILE" <<'PY'
-import re
-import sys
-import urllib.request
+# Routing rules decide what reaches the gateway at all: only domains named by
+# a smart-routing rule (built-in defaults + user rules, including remote
+# rule-sets and GEOSITE) are answered with the server IP for client networks;
+# everything else resolves normally so phones connect directly. Rules whose
+# target resolves to direct are left alone, block targets are refused in DNS.
+# Remote lists are cached; --render-only never touches the network.
+build_rule_domains() {
+    python3 - "$DEFAULT_RULES_FILE" "$USER_RULES_FILE" "$POLICY_MAP_FILE" \
+        "$RULE_DOMAIN_CACHE" "${mode:-}" "$BASE_DIR/rule-domains.txt" "$BASE_DIR/rule-block.txt" <<'PY'
+import hashlib, os, re, sys, urllib.request
 
-domain_re = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9_-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9_-]*[A-Za-z0-9])?)+$")
+default_rules, user_rules, policy_file, cache_dir, mode, out_proxy, out_block = sys.argv[1:8]
+GEOSITE = "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/%s.list"
+LABEL = re.compile(r"^[a-z0-9_]([a-z0-9_-]*[a-z0-9_])?$")
+policy = {}
+try:
+    for raw in open(policy_file, encoding="utf-8"):
+        key, sep, value = raw.strip().partition("=")
+        if sep and not key.startswith("#"):
+            policy[key.strip()] = value.strip()
+except OSError:
+    pass
 
-def clean(value):
-    value = value.strip().strip("'\"")
-    for prefix in ("+.", "*."):
+def action(target):
+    resolved = policy.get(target.strip(), target.strip()).lower()
+    if resolved in ("direct", "dir", "direct-out"):
+        return None
+    return "block" if resolved in ("block", "reject", "reject-drop") else "proxy"
+
+def valid(name):
+    labels = name.split(".")
+    return len(labels) >= 1 and all(LABEL.match(x) for x in labels) and len(name) <= 253
+
+def entry(kind, value):
+    value = value.strip().strip("'\"").lower().rstrip(".")
+    if kind == "keyword":
+        return "keyword:" + value if value and "\n" not in value else None
+    for prefix in ("+.", "*.", "."):
         if value.startswith(prefix):
-            value = value[2:]
-    value = value.lstrip(".").rstrip(".")
-    return value[4:] if value.startswith("www.") else value
+            value, kind = value[len(prefix):], "domain"
+    return "%s:%s" % (kind, value) if value and valid(value) else None
 
-def parse_rule_text(text):
-    domains = set()
+def parse_list(text):
+    """Domain-set (plain = exact, +./. = suffix) and classical lists, text or YAML."""
+    found = set()
     for raw in text.splitlines():
         line = raw.split("#", 1)[0].strip()
         if not line or line.lower().startswith("payload") or line[:1] in "!;":
             continue
         line = line.lstrip("- ").strip().strip("'\"")
-        parts = [part.strip().strip("'\"") for part in line.split(",")]
-        if len(parts) > 1 and parts[0].upper() in ("DOMAIN", "HOST", "DOMAIN-SUFFIX", "HOST-SUFFIX"):
-            domain = clean(parts[1])
+        parts = [p.strip().strip("'\"") for p in line.split(",")]
+        kind = parts[0].upper()
+        if len(parts) > 1:
+            mapped = {"DOMAIN": "full", "HOST": "full", "DOMAIN-SUFFIX": "domain",
+                      "HOST-SUFFIX": "domain", "DOMAIN-KEYWORD": "keyword"}.get(kind)
+            item = entry(mapped, parts[1]) if mapped else None
         else:
-            domain = clean(line)
-        if domain_re.match(domain):
-            domains.add(domain)
-    return domains
+            item = entry("full", line)
+        if item:
+            found.add(item)
+    return found
 
-result = set()
-with open(sys.argv[1], encoding="utf-8") as rules:
-    for raw in rules:
-        line = raw.split("#", 1)[0].strip()
-        if not line:
-            continue
-        parts = [part.strip() for part in line.split(",")]
-        if len(parts) < 2 or parts[-1].lower() in ("direct", "dir", "block", "reject"):
-            continue
-        rule_type = parts[0].upper()
-        if rule_type in ("DOMAIN", "HOST", "DOMAIN-SUFFIX", "HOST-SUFFIX"):
-            domain = clean(parts[1])
-            if domain_re.match(domain):
-                result.add(domain)
-        elif rule_type == "RULE-SET" and parts[1].startswith("http"):
-            try:
-                with urllib.request.urlopen(parts[1], timeout=15) as response:
-                    result.update(parse_rule_text(response.read().decode("utf-8", "ignore")))
-            except Exception as exc:
-                print(f"[!] default rule-set fetch failed ({parts[1]}): {exc}", file=sys.stderr)
+def fetch(url):
+    """Remote list text: refreshed unless --render-only, falling back to cache."""
+    os.makedirs(cache_dir, exist_ok=True)
+    path = os.path.join(cache_dir, hashlib.sha256(url.encode()).hexdigest()[:24] + ".txt")
+    if mode != "--render-only":
+        try:
+            with urllib.request.urlopen(url, timeout=15) as resp:
+                text = resp.read().decode("utf-8", "ignore")
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as handle:
+                handle.write(text)
+            os.replace(tmp, path)
+            return text
+        except Exception as exc:
+            print("[!] rule list fetch failed (%s): %s; using cache" % (url, exc), file=sys.stderr)
+    try:
+        return open(path, encoding="utf-8").read()
+    except OSError:
+        print("[!] rule list not cached and not fetched, skipped for DNS: %s" % url, file=sys.stderr)
+        return ""
 
-for domain in sorted(result):
-    print(domain)
+def ruleset_text(source):
+    source = source.split("#", 1)[0]
+    if source.startswith(("http://", "https://")):
+        if source.lower().split("?", 1)[0].endswith(".mrs"):
+            # Binary mihomo format: use the plain list published next to it
+            # (MetaCubeX meta-rules-dat ships .list beside every .mrs).
+            return fetch(re.sub(r"\.mrs(\?|$)", r".list\1", source, count=1))
+        return fetch(source)
+    if source.lower().endswith(".mrs"):
+        print("[!] local .mrs rule-set cannot be read for DNS: %s" % source, file=sys.stderr)
+        return ""
+    try:
+        return open(source, encoding="utf-8").read()
+    except OSError:
+        return ""
+
+result = {"proxy": set(), "block": set()}
+for path in (default_rules, user_rules):
+    try:
+        lines = open(path, encoding="utf-8").read().splitlines()
+    except OSError:
+        continue
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith(("#", ";")):
+            continue
+        parts = [p.strip() for p in line.split(",")]
+        kind = parts[0].upper().replace("_", "-")
+        if len(parts) < 3 or kind in ("FINAL", "IP-CIDR", "IP-CIDR6", "GEOIP"):
+            continue
+        act = action(parts[-1])
+        if act is None:
+            continue
+        if kind in ("DOMAIN", "DOMAIN-SUFFIX", "DOMAIN-KEYWORD"):
+            item = entry({"DOMAIN": "full", "DOMAIN-SUFFIX": "domain", "DOMAIN-KEYWORD": "keyword"}[kind], parts[1])
+            if item:
+                result[act].add(item)
+        elif kind == "GEOSITE":
+            result[act] |= parse_list(fetch(GEOSITE % parts[1].lower()))
+        elif kind in ("RULE-SET", "RULESET"):
+            result[act] |= parse_list(ruleset_text(parts[1]))
+for key, out in (("proxy", out_proxy), ("block", out_block)):
+    with open(out, "w", encoding="utf-8") as handle:
+        handle.write("".join(x + "\n" for x in sorted(result[key])))
+print("[OK] Routing-rule domains for DNS: %d proxied, %d blocked" % (len(result["proxy"]), len(result["block"])))
 PY
 }
 
@@ -249,7 +323,7 @@ PYPATH
         local validate_conf validate_log rc=0
         validate_conf=$(mktemp "${BASE_DIR}/config.validate.XXXXXX.yaml")
         validate_log=$(mktemp "${BASE_DIR}/config.validate.XXXXXX.log")
-        sed -e 's/"0.0.0.0:853"/"127.0.0.1:0"/g' "$MOSDNS_CONF.tmp" > "$validate_conf"
+        sed -e 's/"127.0.0.1:8853"/"127.0.0.1:0"/g' "$MOSDNS_CONF.tmp" > "$validate_conf"
         timeout 2 mosdns start -c "$validate_conf" > "$validate_log" 2>&1 || rc=$?
         if [[ $rc -ne 0 && $rc -ne 124 ]]; then
             cat "$validate_log" >&2
@@ -317,7 +391,7 @@ mkdir -p "$BASE_DIR"
 live="$BASE_DIR"
 stage="$(mktemp -d "$live/.rules-stage.XXXXXX")"
 backup="$(mktemp -d "$live/.rules-backup.XXXXXX")"
-files=(gfwlist.txt chinalist.txt gfwlist.raw chinalist.raw override-direct.txt override-proxy.txt override-block.txt config.yaml)
+files=(gfwlist.txt chinalist.txt gfwlist.raw chinalist.raw override-direct.txt override-proxy.txt override-block.txt rule-domains.txt rule-block.txt config.yaml)
 was_active=0
 systemctl is-active --quiet mosdns && was_active=1
 published=0
@@ -359,7 +433,6 @@ dns_stage="domain-cache"
 if [[ -z "$mode" ]]; then
     update_domain_cache GFWList "$GFWLIST_URL" GFWLIST_RAW GFWLIST_FILE parse_gfwlist
     update_domain_cache ChinaList "$CHINALIST_URL" CHINALIST_RAW CHINALIST_FILE parse_chinalist valid_chinalist_domain
-    append_default_rule_domains
 else
     if ! valid_domain_cache "$GFWLIST_FILE"; then
         echo "[!] Offline GFWList cache is missing or invalid: $live/gfwlist.txt" >&2
@@ -370,6 +443,9 @@ else
         exit 1
     fi
 fi
+dns_stage="rule-domains"
+RULE_DOMAIN_CACHE="$live/rule-domain-cache"
+build_rule_domains
 dns_stage="local-extras"
 append_local_gfwlist_extras
 sort -u -o "$GFWLIST_FILE" "$GFWLIST_FILE"

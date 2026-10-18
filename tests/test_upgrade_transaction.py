@@ -73,7 +73,7 @@ set -eu
 printf '%s\n' "$*" >> "$TEST_ROOT/events"
 unit="${*: -1}"; unit="${unit%.service}"
 case "$1" in
- is-active) [[ "$(cat "$TEST_ROOT/states/$unit")" == active ]];;
+ is-active) [[ "$(cat "$TEST_ROOT/states/$unit" 2>/dev/null)" == active ]];;
  is-enabled) [[ "$(cat "$TEST_ROOT/states/$unit.enabled")" == enabled ]];;
  restart)
    if [[ "$FAIL" == restart && ! -f "$TEST_ROOT/failed" ]]; then
@@ -81,6 +81,14 @@ case "$1" in
    fi
    echo -n active > "$TEST_ROOT/states/$unit";;
  daemon-reload|cat) :;;
+ enable|disable)
+   # Only the DoT gate may change enablement: upgrades that move mosdns off
+   # public :853 must enable it, and a rollback must stop it again.
+   [[ "$unit" == dot-gate ]] || { echo "unexpected service mutation $*" >&2; exit 97; }
+   # In these fixtures the gate did not exist before the upgrade, so
+   # disabling it returns to "not installed" (no state at all).
+   if [[ "$1" == enable ]]; then echo -n enabled > "$TEST_ROOT/states/dot-gate.enabled"
+   else rm -f "$TEST_ROOT/states/dot-gate" "$TEST_ROOT/states/dot-gate.enabled"; fi;;
  *) echo "unexpected service mutation $*" >&2; exit 97;;
 esac
 ''')
@@ -168,6 +176,17 @@ printf 'completed\\n'
 
     def test_restart_failure_restores_files_and_active_disabled_services(self):
         self.assert_rollback('restart')
+        # The rollback must release public :853 for the restored mosdns.
+        self.assertIn('disable --now dot-gate.service', (self.root / 'events').read_text())
+
+    def test_upgrade_enables_the_dot_gate_after_mosdns(self):
+        result = self.run_upgrade()
+        self.assertEqual(result.returncode, 0, self.detail)
+        events = (self.root / 'events').read_text().splitlines()
+        self.assertIn('enable dot-gate.service', events)
+        self.assertLess(events.index('restart mosdns.service'), events.index('restart dot-gate.service'))
+        self.assertTrue((self.fs / 'etc/systemd/system/dot-gate.service').exists())
+        self.assertTrue((self.fs / 'opt/5gpn/bin/dot-gate.py').exists())
 
     def test_smart_validation_failure_restores_runtime_and_cache(self):
         self.assert_rollback('smart_validation')
@@ -208,7 +227,10 @@ printf 'completed\\n'
         states = self.states()
         result = self.run_upgrade()
         self.assertEqual(result.returncode, 0, self.detail)
-        self.assertEqual(states, self.states())
+        # Every existing unit keeps its state; mosdns was active, so the new
+        # DoT gate (which now owns public :853) is enabled and running.
+        self.assertEqual(states['mosdns'], 'active')
+        self.assertEqual(dict(states, **{'dot-gate': 'active', 'dot-gate.enabled': 'enabled'}), self.states())
         self.assertIn('completed', result.stdout)
         self.assertEqual((self.root / 'lock-proof').read_text(), 'held\n')
         events = (self.root / 'events').read_text()

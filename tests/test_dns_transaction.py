@@ -45,6 +45,10 @@ esac
         (self.dns / 'domain-overrides.conf').write_text('example.org=proxy\ndirect.example=direct\nblock.example=block\n')
         self.env = dict(os.environ, PGW_MOSDNS_DIR=str(self.dns), PGW_ROUTING_LOCK_FILE=str(self.base / 'lock'),
                         PGW_DEFAULT_RULES_FILE=str(self.base / 'no-default-rules'),
+                        # Never read the host's real routing rules (they may
+                        # name remote rule-sets the updater would fetch).
+                        PGW_RULES_FILE=str(self.base / 'no-user-rules'),
+                        PGW_POLICY_MAP=str(self.base / 'no-policy-map'),
                         TEST_BASE=str(self.base), PATH=str(mock) + ':' + os.environ['PATH'])
 
     def tearDown(self):

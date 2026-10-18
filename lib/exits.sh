@@ -98,7 +98,11 @@ ensure_mihomo() {
     esac
     url="https://github.com/MetaCubeX/mihomo/releases/download/v${ver}/mihomo-linux-${arch}-v${ver}.gz"
     tmp="$(mktemp -d)"
-    if ! curl -fsSL --retry 3 --connect-timeout 15 --max-time 90 "$url" -o "$tmp/mihomo.gz"; then
+    # No fixed --max-time: on slow links (~100 KB/s) the release takes longer
+    # than any short cap and every retry would restart from zero. Abort only
+    # when the transfer stalls, and resume partial data on retry.
+    if ! curl -fsSL --retry 5 --retry-all-errors -C - --connect-timeout 15 \
+        --speed-limit 1024 --speed-time 60 --max-time 1800 "$url" -o "$tmp/mihomo.gz"; then
         rm -rf "$tmp"; err "Failed to download mihomo ${ver}. Set MIHOMO_VERSION=<ver> and retry. URL: $url"; return 1
     fi
     if [[ -n "$want_sha" ]]; then
@@ -333,11 +337,14 @@ if ! ip link show "${iface}" >/dev/null 2>&1; then
             runtime_conf="${WG_DIR}/${iface}.conf"
             [[ "${conf}" == "${runtime_conf}" ]] || ln -sf "${conf}" "${runtime_conf}"
             wg-quick up "${iface}" 2>/dev/null || { echo "[!] exit '${current}' (wireguard) failed to start"; exit 1; } ;;
-        shadowsocks|vmess|trojan|vless|hysteria|hysteria2|tuic|anytls|shadowtls|socks|http|router) systemctl start "$(mihomo_unit "${current}")" 2>/dev/null || { echo "[!] exit '${current}' (${etype}) failed to start"; exit 1; } ;;
+        # --no-block: this script is also the unit's own ExecStartPost. Its TUN
+        # device may not exist yet, and a blocking start of the unit that is
+        # currently starting waits on itself until systemd's start timeout.
+        shadowsocks|vmess|trojan|vless|hysteria|hysteria2|tuic|anytls|shadowtls|socks|http|router) systemctl start --no-block "$(mihomo_unit "${current}")" 2>/dev/null || { echo "[!] exit '${current}' (${etype}) failed to start"; exit 1; } ;;
     esac
 fi
 
-for _ in $(seq 1 50); do ip link show up "${iface}" >/dev/null 2>&1 && break; sleep 0.1; done
+for _ in $(seq 1 150); do ip link show up "${iface}" >/dev/null 2>&1 && break; sleep 0.1; done
 ip link show up "${iface}" >/dev/null 2>&1 || { echo "[!] exit '${current}' (${etype}) device is not up"; exit 1; }
 ip route replace default dev "${iface}" table "${TABLE}"
 echo "[OK] egress exit active: ${current} (${etype}, dev ${iface})"

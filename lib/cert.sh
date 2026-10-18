@@ -247,12 +247,29 @@ force_renew_cert() {
         err "No domain found. Cannot renew."
         exit 1
     fi
-    get_public_ip
-    certbot_diagnostics "$DOMAIN"
     if ! command -v certbot >/dev/null 2>&1; then
         err "certbot 不存在，无法签发/续期证书。请重新运行安装脚本安装依赖。"
         exit 1
     fi
+    # Wildcard (Cloudflare) mode: renew through DNS-01 using the saved
+    # renewal settings; no TCP/80 or service interruption is involved.
+    local lineage
+    lineage="$(cat "${CONF_DIR}/.cert_lineage" 2>/dev/null || true)"
+    if [[ -n "$lineage" && -d "${LE_LIVE_DIR}/${lineage}" ]]; then
+        local wout wrc=0
+        wout="$(certbot renew --cert-name "$lineage" --force-renewal -n 2>&1)" || wrc=$?
+        printf '%s\n' "$wout"
+        if (( wrc != 0 )); then
+            err "通配符证书续期失败。certbot 最后输出:"
+            printf '%s\n' "$wout" | tail -n 30 >&2
+            return "$wrc"
+        fi
+        # The deploy hook copied the new files and restarted mosdns.
+        ok "Wildcard certificate renewed"
+        return 0
+    fi
+    get_public_ip
+    certbot_diagnostics "$DOMAIN"
     local certbot_cmd=()
     if [[ -d "/etc/letsencrypt/live/${DOMAIN}" ]]; then
         certbot_cmd=(certbot certonly --standalone -d "$DOMAIN" --force-renewal \
@@ -297,4 +314,212 @@ force_renew_cert() {
     else
         systemctl start mosdns && ok "Certificate renewed and mosdns started"
     fi
+}
+
+# ---- Cloudflare: wildcard certificate + one-click domain reset -------------
+# With a Cloudflare API token (Zone.DNS edit) the DoT name becomes a random
+# <label>.dns.<zone> covered by one wildcard certificate "*.dns.<zone>":
+# resetting the name needs no new certificate, never publishes the name in
+# Certificate Transparency logs, and the old name dies with its A record.
+CF_CREDENTIALS="${PGW_CF_CREDENTIALS:-/etc/5gpn/cloudflare.ini}"
+CF_CONF="${PGW_CF_CONF:-/etc/5gpn/cloudflare.conf}"
+CF_CERT_NAME="5gpn-wildcard"
+CF_DOT_LABEL="dns"
+MOSDNS_DIR="${PGW_MOSDNS_DIR:-/etc/mosdns}"
+LE_LIVE_DIR="${PGW_LE_LIVE:-/etc/letsencrypt/live}"
+LE_DEPLOY_HOOK_DIR="${PGW_LE_DEPLOY_HOOKS:-/etc/letsencrypt/renewal-hooks/deploy}"
+
+# cf_api METHOD PATH [JSON] -> prints the "result" member as JSON.
+cf_api() {
+    python3 - "$CF_CREDENTIALS" "$@" <<'PY'
+import json, os, sys, urllib.error, urllib.request
+cred, method, path = sys.argv[1:4]
+body = sys.argv[4] if len(sys.argv) > 4 else None
+token = ""
+try:
+    for line in open(cred, encoding="utf-8"):
+        key, sep, value = line.partition("=")
+        if sep and key.strip() == "dns_cloudflare_api_token":
+            token = value.strip()
+except OSError:
+    pass
+if not token:
+    sys.exit("Cloudflare API token missing: " + cred)
+base = os.environ.get("PGW_CF_API", "https://api.cloudflare.com/client/v4")
+req = urllib.request.Request(base + path, method=method,
+                             data=body.encode() if body else None,
+                             headers={"Authorization": "Bearer " + token,
+                                      "Content-Type": "application/json"})
+try:
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        data = json.load(resp)
+except urllib.error.HTTPError as exc:
+    try:
+        data = json.load(exc)
+    except Exception:
+        sys.exit("Cloudflare API %s %s failed: HTTP %d" % (method, path, exc.code))
+except Exception as exc:
+    sys.exit("Cloudflare API %s %s failed: %s" % (method, path, exc))
+if not data.get("success"):
+    errors = "; ".join(e.get("message", "") for e in data.get("errors") or []) or "unknown error"
+    sys.exit("Cloudflare API %s %s failed: %s" % (method, path, errors))
+print(json.dumps(data.get("result")))
+PY
+}
+
+cf_conf() { # key -> value from CF_CONF
+    sed -n "s/^${1}=//p" "$CF_CONF" 2>/dev/null | head -n1
+}
+
+cf_configured() {
+    [[ -s "$CF_CREDENTIALS" && -n "$(cf_conf zone_id)" && -n "$(cf_conf zone)" ]]
+}
+
+cf_json() { # python expression over parsed stdin "r" -> printed result
+    python3 -c 'import json,sys; r=json.load(sys.stdin); v='"$1"'; print("\n".join(v) if isinstance(v, list) else v)'
+}
+
+issue_wildcard_cert() {
+    local zone out rc=0
+    zone="$(cf_conf zone)"
+    [[ -n "$zone" ]] || { err "Cloudflare zone not configured"; return 1; }
+    info "Issuing wildcard certificate *.${CF_DOT_LABEL}.${zone} via Cloudflare DNS-01..."
+    out="$(certbot certonly --dns-cloudflare --dns-cloudflare-credentials "$CF_CREDENTIALS" \
+        --dns-cloudflare-propagation-seconds 30 -d "*.${CF_DOT_LABEL}.${zone}" \
+        --cert-name "$CF_CERT_NAME" --agree-tos -n --keep-until-expiring \
+        -m "${EMAIL:-admin@${zone}}" 2>&1)" || rc=$?
+    if (( rc != 0 )); then
+        err "Wildcard certificate request failed. certbot output:"
+        printf '%s\n' "$out" | tail -n 20 >&2
+        return 1
+    fi
+    mkdir -p "$LE_DEPLOY_HOOK_DIR"
+    if [[ -f "${LIB_DIR}/renew-hook.sh" ]]; then
+        install -m 0755 "${LIB_DIR}/renew-hook.sh" "${LE_DEPLOY_HOOK_DIR}/99-reload-mosdns.sh" || return 1
+    fi
+    ok "Wildcard certificate ready: *.${CF_DOT_LABEL}.${zone}"
+}
+
+# Connect a Cloudflare API token (Zone -> DNS -> Edit on the DoT zone). The
+# token is read from CF_API_TOKEN or typed without echo; never pass it as an
+# argument (it would land in shell history and process listings).
+setup_cloudflare() {
+    local zone_arg="${1:-}" token="${CF_API_TOKEN:-}" tmp domain candidate zone="" zone_id="" candidates=()
+    command -v certbot >/dev/null 2>&1 || { err "certbot is required"; exit 1; }
+    python3 -c 'import certbot_dns_cloudflare' 2>/dev/null \
+        || { err "certbot Cloudflare plugin missing (install python3-certbot-dns-cloudflare)"; exit 1; }
+    if [[ -z "$token" ]]; then
+        [[ -t 0 ]] || { err "Set CF_API_TOKEN or run interactively"; exit 1; }
+        read -rsp "Cloudflare API Token（输入时不显示）: " token; echo
+    fi
+    [[ -n "$token" && "$token" != *[[:space:]]* ]] || { err "Invalid token"; exit 1; }
+    mkdir -p "$(dirname "$CF_CREDENTIALS")"
+    tmp="$(mktemp "${CF_CREDENTIALS}.XXXXXX")" || exit 1
+    chmod 600 "$tmp"
+    printf 'dns_cloudflare_api_token = %s\n' "$token" > "$tmp"
+    if [[ -n "$zone_arg" ]]; then
+        candidates=("$zone_arg")
+    else
+        domain="$(cat "${CONF_DIR}/.domain" 2>/dev/null || true)"
+        while [[ "$domain" == *.*.* ]]; do candidates+=("$domain"); domain="${domain#*.}"; done
+        [[ -n "$domain" ]] && candidates+=("$domain")
+    fi
+    for candidate in "${candidates[@]}"; do
+        zone_id="$(CF_CREDENTIALS="$tmp" cf_api GET "/zones?name=${candidate}" | cf_json 'r[0]["id"] if r else ""')" \
+            || { rm -f "$tmp"; err "Cloudflare token rejected"; exit 1; }
+        if [[ -n "$zone_id" ]]; then zone="$candidate"; break; fi
+    done
+    [[ -n "$zone" ]] || { rm -f "$tmp"; err "No Cloudflare zone found for: ${candidates[*]:-current domain} (pass the zone name)"; exit 1; }
+    CF_CREDENTIALS="$tmp" cf_api GET "/zones/${zone_id}/dns_records?per_page=1" >/dev/null \
+        || { rm -f "$tmp"; err "Token cannot read DNS records of ${zone}"; exit 1; }
+    mv -f "$tmp" "$CF_CREDENTIALS"
+    printf 'zone=%s\nzone_id=%s\n' "$zone" "$zone_id" > "$CF_CONF"
+    chmod 600 "$CF_CONF"
+    ok "Cloudflare connected: zone ${zone}"
+    issue_wildcard_cert || exit 1
+}
+
+# Point the running DoT service at NEW (covered by the wildcard lineage).
+# Rolls back domain files and certificates if mosdns cannot be reloaded.
+apply_wildcard_dot_domain() {
+    local new="$1" live="${LE_LIVE_DIR}/${CF_CERT_NAME}" backup f
+    [[ -s "${live}/fullchain.pem" && -s "${live}/privkey.pem" ]] || { err "Wildcard certificate missing: $live"; return 1; }
+    backup="$(mktemp -d)"
+    for f in "${CONF_DIR}/.domain" "${MOSDNS_DIR}/.domain" "${CONF_DIR}/.cert_lineage" "${CONF_DIR}/.cert_basename" \
+             "${MOSDNS_DIR}/certs/fullchain.pem" "${MOSDNS_DIR}/certs/privkey.pem"; do
+        [[ -f "$f" ]] && cp -a "$f" "${backup}/${f//\//__}"
+    done
+    restore_wildcard_switch() {
+        for f in "${CONF_DIR}/.domain" "${MOSDNS_DIR}/.domain" "${CONF_DIR}/.cert_lineage" "${CONF_DIR}/.cert_basename" \
+                 "${MOSDNS_DIR}/certs/fullchain.pem" "${MOSDNS_DIR}/certs/privkey.pem"; do
+            if [[ -f "${backup}/${f//\//__}" ]]; then cp -a "${backup}/${f//\//__}" "$f"; else rm -f "$f"; fi
+        done
+    }
+    mkdir -p "${MOSDNS_DIR}/certs" "$CONF_DIR"
+    cp "${live}/fullchain.pem" "${MOSDNS_DIR}/certs/fullchain.pem"
+    cp "${live}/privkey.pem" "${MOSDNS_DIR}/certs/privkey.pem"
+    chown -R mosdns:mosdns "${MOSDNS_DIR}/certs/" 2>/dev/null || true
+    chmod 600 "${MOSDNS_DIR}"/certs/*.pem
+    echo "$new" > "${CONF_DIR}/.domain"
+    echo "$new" > "${MOSDNS_DIR}/.domain"
+    echo "$CF_CERT_NAME" > "${CONF_DIR}/.cert_lineage"
+    rm -f "${CONF_DIR}/.cert_basename"
+    local updater="${PGW_RULES_UPDATER:-/usr/local/bin/update-mosdns-rules.sh}"
+    if [[ -x "$updater" ]]; then
+        if ! "$updater" --offline >/dev/null; then
+            restore_wildcard_switch; "$updater" --offline >/dev/null 2>&1 || true; rm -rf "$backup"
+            err "mosdns reload failed; DoT domain rolled back"
+            return 1
+        fi
+    elif ! systemctl restart mosdns; then
+        restore_wildcard_switch; rm -rf "$backup"
+        err "mosdns restart failed; DoT domain rolled back"
+        return 1
+    fi
+    rm -rf "$backup"
+    regenerate_ios_profile >/dev/null || warn "iOS profile regeneration failed"
+}
+
+# One click: random <label>.dns.<zone>, A record, switch, delete the old record.
+reset_dot_domain() {
+    routing_lock
+    cf_configured || { err "Cloudflare not connected; run: $0 --setup-cloudflare"; exit 1; }
+    local zone zone_id label new old ip new_id id waited=0
+    zone="$(cf_conf zone)"; zone_id="$(cf_conf zone_id)"
+    if [[ ! -s "${LE_LIVE_DIR}/${CF_CERT_NAME}/fullchain.pem" ]]; then
+        issue_wildcard_cert || exit 1
+    fi
+    label="$(python3 -c 'import secrets,string; a=string.ascii_lowercase+string.digits; print("".join(secrets.choice(a) for _ in range(20)))')"
+    new="${label}.${CF_DOT_LABEL}.${zone}"
+    ip="$(cat "${MOSDNS_DIR}/.public_ip" 2>/dev/null || true)"
+    [[ -n "$ip" ]] || { get_public_ip; ip="$PUBLIC_IP"; }
+    old="$(cat "${CONF_DIR}/.domain" 2>/dev/null || true)"
+    new_id="$(cf_api POST "/zones/${zone_id}/dns_records" \
+        "{\"type\":\"A\",\"name\":\"${new}\",\"content\":\"${ip}\",\"ttl\":60,\"proxied\":false,\"comment\":\"5gpn-x DoT\"}" \
+        | cf_json 'r["id"]')" || { err "Could not create the DNS record"; exit 1; }
+    info "A record created: ${new} -> ${ip}; waiting until it resolves..."
+    until domain_resolves_to_public_ip "$new" "$ip"; do
+        (( waited >= 90 )) && break
+        sleep 5; waited=$((waited + 5))
+    done
+    if ! domain_resolves_to_public_ip "$new" "$ip"; then
+        cf_api DELETE "/zones/${zone_id}/dns_records/${new_id}" >/dev/null || true
+        err "${new} did not resolve within 90s; nothing was changed"
+        exit 1
+    fi
+    if ! apply_wildcard_dot_domain "$new"; then
+        cf_api DELETE "/zones/${zone_id}/dns_records/${new_id}" >/dev/null || true
+        exit 1
+    fi
+    # Retire the previous name: only A records of that exact name that point
+    # at this server are deleted, so unrelated records are never touched.
+    if [[ -n "$old" && "$old" != "$new" && "$old" == *".${zone}" ]]; then
+        for id in $(cf_api GET "/zones/${zone_id}/dns_records?type=A&name=${old}" \
+                    | cf_json "[x['id'] for x in r if x.get('content') == '${ip}']" 2>/dev/null); do
+            cf_api DELETE "/zones/${zone_id}/dns_records/${id}" >/dev/null \
+                || warn "Could not delete the old DNS record of ${old}"
+        done
+    fi
+    ok "DoT domain reset: ${new}"
+    printf 'NEW_DOMAIN=%s\n' "$new"
 }

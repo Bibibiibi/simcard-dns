@@ -103,6 +103,12 @@ regen_smart() {
         info "Activate smart routing with: $0 --set-exit smart"
     fi
     rm -rf "$backup_dir"
+    # DNS decides from these same rules which domains reach the gateway at
+    # all; refresh it so a rule change takes effect for clients right away.
+    local updater="${PGW_RULES_UPDATER:-/usr/local/bin/update-mosdns-rules.sh}"
+    if [[ -x "$updater" ]] && ! "$updater" --offline >/dev/null; then
+        warn "Routing rules saved, but the DNS rule-domain refresh failed; retry with: $0 --update-rules"
+    fi
     local n; n="$(grep -cvE '^[[:space:]]*(#|;|$)' "${RULES_FILE}" 2>/dev/null || echo 0)"
     ok "Smart router rebuilt (${n} rules)."
 }
@@ -174,7 +180,7 @@ add_rule() {
 
 add_ruleset() {
     local source="${1:-}" policy="${2:-}"
-    [[ -n "$source" && -n "$policy" ]] || { err "Usage: $0 --add-ruleset <url|path> <exit|category|direct|block>"; exit 1; }
+    [[ -n "$source" && -n "$policy" ]] || { err "Usage: $0 --add-ruleset <url|path> <exit|category|local|direct|block>"; exit 1; }
     case "$source" in
         http://*|https://*) ;;
         /*) [[ -f "$source" ]] || { err "Rule-set file not found: $source"; exit 1; } ;;
@@ -261,10 +267,10 @@ init_policy_map() {
 set_policy() {
     routing_lock
     local cat="${1:-}" target="${2:-}" old
-    [[ -z "$cat" || -z "$target" ]] && { err "Usage: $0 --set-policy <category> <exit|direct|block>"; exit 1; }
+    [[ -z "$cat" || -z "$target" ]] && { err "Usage: $0 --set-policy <category> <exit|local|direct|block>"; exit 1; }
     case "$target" in
-        direct|block) ;;
-        *) exit_exists "$target" || { err "Unknown target '$target' (use an exit name, direct, or block)"; exit 1; } ;;
+        local|direct|block) ;;
+        *) exit_exists "$target" || { err "Unknown target '$target' (use an exit name, local, direct, or block)"; exit 1; } ;;
     esac
     mkdir -p "$(dirname "${POLICY_MAP}")"; touch "${POLICY_MAP}"
     old="$(mktemp)"; cp -a "${POLICY_MAP}" "$old"
@@ -346,6 +352,7 @@ proxy_domain() (
     [[ "$domain" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$ ]] || { err "Invalid domain"; exit 1; }
     case "$target" in
         direct|block) action="$target" ;;
+        local) action=proxy ;;
         *) exit_exists "$target" || { err "Unknown target '$target'"; exit 1; }; action=proxy ;;
     esac
     local dns_dir="${PGW_MOSDNS_DIR:-/etc/mosdns}" updater="${PGW_RULES_UPDATER:-/usr/local/bin/update-mosdns-rules.sh}"

@@ -14,6 +14,20 @@ plugins:
       files:
         - /etc/mosdns/chinalist.txt
 
+  # Domains named by smart-routing rules (built from the rules by the updater).
+  # Only these are sent to the gateway; block targets are refused here.
+  - tag: rule_domains
+    type: domain_set
+    args:
+      files:
+        - /etc/mosdns/rule-domains.txt
+
+  - tag: rule_block_domains
+    type: domain_set
+    args:
+      files:
+        - /etc/mosdns/rule-block.txt
+
   # Explicit per-domain overrides managed by --proxy-domain. These are
   # evaluated before ChinaList/GFWList for client networks only.
   - tag: override_direct_domains
@@ -143,8 +157,9 @@ __LOCAL_SECONDARY_UPSTREAMS__
 
   # DNS service does not return AAAA records; clients use IPv4 only.
   # Client networks (CLIENT_CIDRS, public mobile ranges):
-  #   ChinaList -> local_resolve (direct);
-  #   everything else -> server IP (proxied via TCP/QUIC).
+  #   domains named by a routing rule -> server IP (proxied, exit per rule);
+  #   rule target block -> refused; everything else resolves normally and the
+  #   phone connects directly (ChinaList -> local_resolve, other -> overseas).
   # Other sources:
   #   GFWList -> normal overseas resolve (no hijack);
   #   ChinaList -> local_resolve; other -> overseas.
@@ -173,21 +188,18 @@ __LOCAL_SECONDARY_UPSTREAMS__
           - has_resp
         exec: accept
       - matches:
+          - qname $rule_block_domains
+        exec: reject 0
+      - matches:
+          - qname $rule_domains
+          - qtype 1
+        exec: black_hole __SERVER_IP__
+      - matches:
+          - has_resp
+        exec: accept
+      - matches:
           - qname $china_domains
         exec: goto local_resolve
-      - matches:
-          - qname $gfw_domains
-          - qtype 1
-        exec: black_hole __SERVER_IP__
-      - matches:
-          - has_resp
-        exec: accept
-      - matches:
-          - qtype 1
-        exec: black_hole __SERVER_IP__
-      - matches:
-          - has_resp
-        exec: accept
       - exec: goto remote_resolve
 
   - tag: other_client
@@ -205,8 +217,10 @@ __LOCAL_SECONDARY_UPSTREAMS__
       - matches:
           - has_resp
         exec: accept
+      # dot-gate owns the public port and checks the DoT name; it relays
+      # client-network connections from 127.0.0.2 (others from 127.0.0.3).
       - matches:
-          - client_ip __CLIENT_CIDRS__
+          - client_ip __CLIENT_CIDRS__ 127.0.0.2/32
         exec: goto proxy_client
       - exec: goto other_client
 
@@ -214,6 +228,6 @@ __LOCAL_SECONDARY_UPSTREAMS__
     type: tcp_server
     args:
       entry: main_sequence
-      listen: "0.0.0.0:853"
+      listen: "127.0.0.1:8853"
       cert: /etc/mosdns/certs/fullchain.pem
       key: /etc/mosdns/certs/privkey.pem

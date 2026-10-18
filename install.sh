@@ -239,7 +239,7 @@ bootstrap_from_repo_if_needed() {
         lib/exits.sh lib/rules.sh lib/uninstall.sh
         lib/renew-hook.sh lib/sniproxy.conf lib/quic-proxy.go
         lib/mosdns.yaml.template lib/update-rules.sh lib/ios-http.py lib/tgbot.py
-        lib/wa-shim.py lib/rules-import.py lib/mihomo-exit-config.py
+        lib/wa-shim.py lib/dot-gate.py lib/rules-import.py lib/mihomo-exit-config.py
         lib/mihomo-router-config.py lib/rules-default.conf lib/host-setup.sh
     )
     local missing=0 f
@@ -303,6 +303,12 @@ Options:
                  Change DoT domain, issue certificate, reload mosdns
   --set-dot-domain-force <domain>
                  Force-change DoT domain without issuing a certificate first
+  --setup-cloudflare [zone]
+                 Connect a Cloudflare API token (Zone/DNS/Edit; read from
+                 CF_API_TOKEN or typed without echo) and issue the wildcard
+                 certificate *.dns.<zone> used by --reset-domain.
+  --reset-domain Switch DoT to a new random <label>.dns.<zone> name (record
+                 created via Cloudflare) and delete the previous name's record.
   --set-dns <remote-dns> [local-dns]
                  Set primary/fallback DNS upstreams and reload mosdns/sniproxy.
                  remote is used for international/proxy-side resolution; local
@@ -311,6 +317,14 @@ Options:
                  Set the public client networks (e.g. a mobile carrier's
                  egress ranges) that get proxied DNS answers and may use the
                  reverse proxy. Default: CTMO (AS136167) prefixes.
+  --list-client-asns
+                 List allowlisted ASNs and any hand-set client CIDRs.
+  --lookup-client-asn <ASN>
+                 Show an ASN's holder and announced IPv4 prefixes (no change).
+  --add-client-asn <ASN>
+                 Allowlist every announced IPv4 prefix of an ASN (RIPEstat).
+  --del-client-asn <ASN>
+                 Remove an ASN's prefixes, keeping other ASNs and manual CIDRs.
   --list-exits   List configured egress exits and which one is active
   --check-exits  Test reachability of each exit's upstream node (UP/DOWN)
   --add-exit <name> [wg.conf | proxy-uri]
@@ -419,6 +433,7 @@ install_stage_deploy() {
     install_whatsapp_shim || return $?
     install_quic_proxy || return $?
     install_mosdns || return $?
+    install_dot_gate || return $?
     init_rules || return $?
     system_tuning || return $?
     setup_firewall || return $?
@@ -504,11 +519,13 @@ upgrade_code() (
         /etc/mosdns/config.yaml.template /etc/mosdns/config.yaml
         /etc/mosdns/gfwlist.txt /etc/mosdns/chinalist.txt
         /etc/mosdns/override-direct.txt /etc/mosdns/override-proxy.txt /etc/mosdns/override-block.txt
+        /etc/mosdns/rule-domains.txt /etc/mosdns/rule-block.txt /etc/mosdns/rule-domain-cache
         /var/lib/5gpn-quic/remote-dns /usr/local/bin/update-mosdns-rules.sh /usr/local/bin/mosdns
         /etc/systemd/system/quic-proxy.service /etc/systemd/system/5gpn-mihomo@.service
+        /etc/systemd/system/dot-gate.service
         /etc/5gpn/pgw-exit.nft
         /etc/letsencrypt/renewal-hooks/deploy/99-reload-mosdns.sh)
-    local active=() units=(mosdns sniproxy quic-proxy wa-shim 5gpn-tgbot 5gpn-mihomo@smart)
+    local active=() units=(mosdns dot-gate sniproxy quic-proxy wa-shim 5gpn-tgbot 5gpn-mihomo@smart)
     for unit in "${units[@]}"; do
         if systemctl is-active --quiet "$unit.service"; then active+=("$unit"); fi
     done
@@ -525,6 +542,11 @@ upgrade_code() (
         fi
         if (( ! committed )); then
             set +e
+            # A gate started by this upgrade would keep public :853 from the
+            # restored mosdns (which listens there itself), so stop it first.
+            if [[ " ${active[*]} " != *" dot-gate "* ]]; then
+                systemctl disable --now dot-gate.service >/dev/null 2>&1 || true
+            fi
             for i in "${!paths[@]}"; do
                 path="${paths[$i]}"
                 rm -rf "$path" || recovery=1
@@ -552,7 +574,7 @@ upgrade_code() (
     upgrade_stage=deploy-code
     write_quic_dns_file "$remote_dns"
     install_ctl_entrypoint
-    for name in tgbot ios-http wa-shim mihomo-exit-config mihomo-router-config rules-import; do
+    for name in tgbot ios-http wa-shim dot-gate mihomo-exit-config mihomo-router-config rules-import; do
         install -m 0755 "${LIB_DIR}/${name}.py" "${BASE_DIR}/bin/${name}.py"
     done
     install -m 0755 "${LIB_DIR}/update-rules.sh" /usr/local/bin/update-mosdns-rules.sh
@@ -620,6 +642,7 @@ AmbientCapabilities=CAP_NET_BIND_SERVICE
 [Install]
 WantedBy=multi-user.target
 EOF
+    write_dot_gate_unit
     systemctl daemon-reload
     # Keep service enablement and active/stopped state unchanged; only active units restart.
     for unit in "${active[@]}"; do
@@ -627,6 +650,14 @@ EOF
         systemctl restart "$unit.service"
         systemctl is-active --quiet "$unit.service"
     done
+    # mosdns now serves only 127.0.0.1:8853; the gate takes over public :853.
+    # Hosts upgraded from before the gate existed get it enabled and started.
+    if [[ " ${active[*]} " == *" mosdns "* && " ${active[*]} " != *" dot-gate "* ]]; then
+        upgrade_stage=start-dot-gate
+        systemctl enable dot-gate.service >/dev/null 2>&1
+        systemctl restart dot-gate.service
+        systemctl is-active --quiet dot-gate.service
+    fi
     committed=1
     trap - EXIT HUP INT TERM
     rm -rf "$txn"
@@ -685,6 +716,14 @@ case "${1:-}" in
         check_root
         force_set_dot_domain "${2:-}"
         ;;
+    --setup-cloudflare)
+        check_root
+        setup_cloudflare "${2:-}"
+        ;;
+    --reset-domain)
+        check_root
+        reset_dot_domain
+        ;;
     --set-dns)
         check_root
         set_custom_dns "${2:-}" "${3:-}" "${4:-}"
@@ -693,6 +732,21 @@ case "${1:-}" in
         check_root
         shift
         set_client_cidrs "$*"
+        ;;
+    --list-client-asns)
+        check_root
+        list_client_asns
+        ;;
+    --lookup-client-asn)
+        lookup_client_asn "${2:-}"
+        ;;
+    --add-client-asn)
+        check_root
+        add_client_asn "${2:-}"
+        ;;
+    --del-client-asn)
+        check_root
+        del_client_asn "${2:-}"
         ;;
     --setup-whatsapp)
         check_root

@@ -312,6 +312,45 @@ EOF
     ok "WhatsApp no-SNI shim installed (public :443 -> sniproxy 127.0.0.1:8443)"
 }
 
+# The DoT entry gate owns public :853 and only relays connections whose TLS
+# SNI is the current DoT domain to mosdns on 127.0.0.1:8853 (see dot-gate.py).
+write_dot_gate_unit() {
+    cat > /etc/systemd/system/dot-gate.service <<EOF
+[Unit]
+Description=5GPN-X DoT entry gate (current-domain SNI check)
+After=network-online.target mosdns.service
+Wants=network-online.target mosdns.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 ${BASE_DIR}/bin/dot-gate.py
+Restart=always
+RestartSec=2
+User=mosdns
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+install_dot_gate() {
+    info "Installing DoT entry gate..."
+    [[ -f "${LIB_DIR}/dot-gate.py" ]] || { err "dot-gate.py not found in ${LIB_DIR}"; return 1; }
+    mkdir -p "${BASE_DIR}/bin"
+    install -m 0755 "${LIB_DIR}/dot-gate.py" "${BASE_DIR}/bin/dot-gate.py"
+    write_dot_gate_unit
+    systemctl daemon-reload
+    systemctl enable dot-gate.service 2>/dev/null || true
+    ok "DoT entry gate installed (public :853 -> mosdns 127.0.0.1:8853, current domain only)"
+}
+
 install_quic_proxy() {
     ensure_proxy_user
     if [[ ! -x "${BASE_DIR}/bin/quic-proxy" ]]; then
@@ -638,7 +677,7 @@ install_ctl_entrypoint() {
     local libs=(
         common.sh dns.sh cert.sh services.sh exits.sh rules.sh uninstall.sh
         renew-hook.sh sniproxy.conf quic-proxy.go mosdns.yaml.template
-        update-rules.sh ios-http.py tgbot.py wa-shim.py rules-import.py
+        update-rules.sh ios-http.py tgbot.py wa-shim.py dot-gate.py rules-import.py
         mihomo-exit-config.py mihomo-router-config.py rules-default.conf
         host-setup.sh
     )
@@ -726,6 +765,7 @@ EOF
 start_services() {
     info "Starting services..."
     systemctl restart mosdns || { err "mosdns failed to start"; journalctl -u mosdns --no-pager -n 20; exit 1; }
+    systemctl restart dot-gate || { err "dot-gate failed to start"; journalctl -u dot-gate --no-pager -n 20; exit 1; }
     systemctl restart sniproxy || { err "sniproxy failed to start"; journalctl -u sniproxy --no-pager -n 20; exit 1; }
     systemctl restart wa-shim || { err "wa-shim failed to start"; journalctl -u wa-shim --no-pager -n 20; exit 1; }
     systemctl restart quic-proxy || { err "quic-proxy failed to start"; journalctl -u quic-proxy --no-pager -n 20; exit 1; }
@@ -764,7 +804,7 @@ show_status() {
     echo "=========================================="
     echo "      Proxy Gateway Status"
     echo "=========================================="
-    for svc in mosdns sniproxy wa-shim quic-proxy; do
+    for svc in mosdns dot-gate sniproxy wa-shim quic-proxy; do
         status=$(systemctl is-active "$svc" 2>/dev/null || echo "unknown")
         if [[ "$status" == "active" ]]; then
             echo -e "$svc: ${GREEN}running${NC}"

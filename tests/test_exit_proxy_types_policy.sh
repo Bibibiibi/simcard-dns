@@ -122,7 +122,7 @@ done
 [[ "${install_body}" == *'5gpn-mihomo@'* ]] || fail "mihomo systemd template missing"
 [[ "${install_body}" == *'mihomo-exit-config.py'* ]] || fail "mihomo generator wiring missing"
 [[ "${install_body}" == *'systemd-escape --template=5gpn-mihomo@.service'* ]] || fail "mihomo instance names must be escaped"
-[[ "${install_body}" == *'systemctl start "$(mihomo_unit "${current}")"'* ]] || fail "apply-exit must start escaped mihomo units"
+[[ "${install_body}" == *'systemctl start --no-block "$(mihomo_unit "${current}")"'* ]] || fail "apply-exit must start escaped mihomo units (non-blocking)"
 [[ "${install_body}" == *'ExecStart=${MIHOMO_BIN} -d ${CONF_DIR}/mihomo/%I -f ${EXITS_DIR}/%I.yaml'* ]] || fail "mihomo unit must use the unescaped instance for config paths"
 [[ "${install_body}" == *'ip route replace default dev'* ]] || fail "exit must route through pgw device"
 [[ "${install_body}" != *'SINGBOX_VERSION_DEFAULT'* ]] || fail "sing-box runtime must be removed"

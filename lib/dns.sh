@@ -354,16 +354,174 @@ set_client_cidrs() {
     fi
     rm -rf "$backup_dir"
     ok "Client CIDRs updated: $cidrs"
-    # managed must be requested explicitly on every run; a host that was set
-    # up that way still has the OLD list in its INPUT rules unless asked.
-    if [[ "$(resolve_firewall_mode 2>/dev/null)" != managed && -f "${PGW_FW_MARK:-/etc/5gpn/.firewall-managed}" ]]; then
-        warn "This host's firewall was installed in managed mode; its 80/443 allow rules still use the previous client list."
-        warn "Re-run with FIREWALL_MODE=managed to update them: FIREWALL_MODE=managed $0 --set-client-cidrs \"$cidrs\""
+    # A full managed re-apply must be requested explicitly, but a host already
+    # running the managed ruleset gets its two client allow lines updated in
+    # place so the firewall never disagrees with DNS.
+    if [[ "$(resolve_firewall_mode 2>/dev/null)" != managed ]]; then
+        local rc=0
+        refresh_managed_client_rules "$cidrs" || rc=$?
+        case "$rc" in
+            0) ok "Managed firewall: 80/443 allow rules updated to the new client list" ;;
+            2) ;;
+            *) warn "Managed firewall client rules could not be updated; re-run with FIREWALL_MODE=managed $0 --set-client-cidrs \"$cidrs\"" ;;
+        esac
     fi
 }
 
+# ---- Client allowlist by ASN ----------------------------------------------
+# Each allowed ASN is stored as /etc/5gpn/client-asns/AS<n>.txt (first line
+# "# <holder>", then its announced IPv4 prefixes). The effective client list
+# stays in CLIENT_CIDRS_FILE: adding an ASN unions its prefixes in, deleting
+# one subtracts them again while keeping every other ASN and any CIDRs that
+# were set by hand. Prefixes come from RIPEstat (public BGP data).
+CLIENT_ASN_DIR="${PGW_CLIENT_ASN_DIR:-/etc/5gpn/client-asns}"
+CTMO_ASN="AS136167"
+
+client_asn_tool() {
+    python3 - "$@" <<'PY'
+import ipaddress, json, os, sys, urllib.request
+
+def nets(text):
+    return [ipaddress.IPv4Network(x, strict=False) for x in text.replace(",", " ").split()]
+
+def emit(items):
+    print(" ".join(str(n) for n in ipaddress.collapse_addresses(items)))
+
+cmd, args = sys.argv[1], sys.argv[2:]
+if cmd == "lookup":
+    asn = args[0]
+    base = os.environ.get("PGW_RIPESTAT", "https://stat.ripe.net/data")
+    mock = os.environ.get("PGW_RIPESTAT_DIR")
+    def get(kind):
+        if mock:
+            with open(os.path.join(mock, "%s-%s.json" % (kind, asn)), encoding="utf-8") as handle:
+                return json.load(handle)["data"]
+        url = "%s/%s/data.json?resource=%s" % (base, kind, asn)
+        with urllib.request.urlopen(url, timeout=20) as resp:
+            return json.load(resp)["data"]
+    try:
+        prefixes = get("announced-prefixes").get("prefixes") or []
+        holder = (get("as-overview").get("holder") or "?")
+    except Exception as exc:
+        sys.exit("ASN lookup failed for %s: %s" % (asn, exc))
+    v4 = list(ipaddress.collapse_addresses(
+        ipaddress.IPv4Network(p["prefix"]) for p in prefixes if ":" not in p.get("prefix", "")))
+    if not v4:
+        sys.exit("%s announces no IPv4 prefixes" % asn)
+    holder = " ".join(holder.replace("\t", " ").split())
+    print("\t".join([asn, holder, str(len(v4)), str(sum(n.num_addresses for n in v4)),
+                     " ".join(map(str, v4))]))
+elif cmd == "add":
+    emit(nets(args[0]) + nets(args[1]))
+elif cmd == "remove":
+    # (current - removed) + kept: subtract exactly, then restore prefixes that
+    # other allowlisted ASNs still need.
+    pieces = nets(args[0])
+    for r in nets(args[1]):
+        out = []
+        for p in pieces:
+            if not p.overlaps(r):
+                out.append(p)
+            elif p.subnet_of(r):
+                continue
+            else:
+                out.extend(p.address_exclude(r))
+        pieces = out
+    emit(pieces + nets(args[2] if len(args) > 2 else ""))
+elif cmd == "covers":
+    have = nets(args[0])
+    print("yes" if all(any(n.subnet_of(h) for h in have) for n in nets(args[1])) else "no")
+else:
+    sys.exit("unknown client_asn_tool command: " + cmd)
+PY
+}
+
+normalize_asn() {
+    local value
+    value="$(printf '%s' "${1:-}" | tr '[:lower:]' '[:upper:]')"
+    value="${value#AS}"
+    [[ "$value" =~ ^[0-9]{1,10}$ && "$value" -gt 0 ]] || return 1
+    printf 'AS%s\n' "$((10#$value))"
+}
+
+# First use: register the built-in CTMO default as AS136167 when the current
+# list still contains it, so it can be listed and deleted like any other ASN.
+client_asn_bootstrap() {
+    [[ -d "$CLIENT_ASN_DIR" ]] && return 0
+    mkdir -p "$CLIENT_ASN_DIR" && chmod 700 "$CLIENT_ASN_DIR" || return 1
+    local cur
+    cur="$(current_client_cidrs)" || return 1
+    if [[ "$(client_asn_tool covers "$cur" "$DEFAULT_CLIENT_CIDRS")" == yes ]]; then
+        { printf '# CHINATELECOM-AS-AP - China Telecom (Macau) (CTMO)\n'; tr ' ' '\n' <<< "$DEFAULT_CLIENT_CIDRS"; } \
+            > "${CLIENT_ASN_DIR}/${CTMO_ASN}.txt"
+    fi
+}
+
+client_asn_prefixes() {
+    grep -hE '^[0-9]' "$@" 2>/dev/null | tr '\n' ' '
+}
+
+# Machine-readable for the bot: "ASN<TAB>holder<TAB>prefix count" per ASN,
+# then "OTHER<TAB>count<TAB>cidrs" for hand-set CIDRs outside every ASN.
+list_client_asns() {
+    unset CLIENT_CIDRS
+    client_asn_bootstrap || exit 1
+    local f cur others
+    shopt -s nullglob
+    for f in "${CLIENT_ASN_DIR}"/AS*.txt; do
+        printf '%s\t%s\t%s\n' "$(basename "$f" .txt)" "$(sed -n '1s/^# //p' "$f")" "$(grep -cE '^[0-9]' "$f")"
+    done
+    cur="$(current_client_cidrs)" || exit 1
+    others="$(client_asn_tool remove "$cur" "$(client_asn_prefixes "${CLIENT_ASN_DIR}"/AS*.txt)")"
+    shopt -u nullglob
+    printf 'OTHER\t%s\t%s\n' "$(wc -w <<< "$others" | tr -d ' ')" "$others"
+}
+
+lookup_client_asn() {
+    local asn info holder count addrs
+    asn="$(normalize_asn "${1:-}")" || { err "Usage: $0 --lookup-client-asn <AS number>"; exit 1; }
+    info="$(client_asn_tool lookup "$asn")" || exit 1
+    IFS=$'\t' read -r _ holder count addrs _ <<< "$info"
+    printf '%s\t%s\t%s\t%s\n' "$asn" "$holder" "$count" "$addrs"
+}
+
+add_client_asn() {
+    routing_lock
+    unset CLIENT_CIDRS
+    local asn info holder count addrs prefixes new
+    asn="$(normalize_asn "${1:-}")" || { err "Usage: $0 --add-client-asn <AS number>"; exit 1; }
+    client_asn_bootstrap || exit 1
+    [[ ! -f "${CLIENT_ASN_DIR}/${asn}.txt" ]] || { err "${asn} is already allowlisted"; exit 1; }
+    info="$(client_asn_tool lookup "$asn")" || exit 1
+    IFS=$'\t' read -r _ holder count addrs prefixes <<< "$info"
+    new="$(client_asn_tool add "$(current_client_cidrs)" "$prefixes")" || exit 1
+    ( set_client_cidrs "$new" ) || { err "${asn} not added; client list unchanged"; exit 1; }
+    { printf '# %s\n' "$holder"; tr ' ' '\n' <<< "$prefixes"; } > "${CLIENT_ASN_DIR}/${asn}.txt"
+    ok "Added ${asn} (${holder}): ${count} prefixes, ${addrs} addresses"
+}
+
+del_client_asn() {
+    routing_lock
+    unset CLIENT_CIDRS
+    local asn file keep new
+    asn="$(normalize_asn "${1:-}")" || { err "Usage: $0 --del-client-asn <AS number>"; exit 1; }
+    client_asn_bootstrap || exit 1
+    file="${CLIENT_ASN_DIR}/${asn}.txt"
+    [[ -f "$file" ]] || { err "${asn} is not allowlisted"; exit 1; }
+    shopt -s nullglob
+    local others=()
+    for f in "${CLIENT_ASN_DIR}"/AS*.txt; do [[ "$f" == "$file" ]] || others+=("$f"); done
+    shopt -u nullglob
+    keep="$( ((${#others[@]})) && client_asn_prefixes "${others[@]}" )"
+    new="$(client_asn_tool remove "$(current_client_cidrs)" "$(client_asn_prefixes "$file")" "$keep")" || exit 1
+    [[ -n "$new" ]] || { err "Refusing to remove ${asn}: the client allowlist would become empty"; exit 1; }
+    ( set_client_cidrs "$new" ) || { err "${asn} not removed; client list unchanged"; exit 1; }
+    rm -f "$file"
+    ok "Removed ${asn} from the client allowlist"
+}
+
 set_dot_domain() {
-    local new_domain="${1:-}" resolved="" old_conf_domain="" old_mosdns_domain="" old_cert_basename=""
+    local new_domain="${1:-}" resolved="" old_conf_domain="" old_mosdns_domain="" old_cert_basename="" old_cert_lineage=""
     [[ -n "$new_domain" ]] || { err "Usage: $0 --set-dot-domain <domain>"; exit 1; }
     if ! is_valid_domain "$new_domain"; then
         err "Invalid domain: '$new_domain'. Provide a fully-qualified domain like dns.example.com"
@@ -382,17 +540,19 @@ set_dot_domain() {
     old_conf_domain=$(cat "${CONF_DIR}/.domain" 2>/dev/null || true)
     old_mosdns_domain=$(cat /etc/mosdns/.domain 2>/dev/null || true)
     old_cert_basename=$(cat "${CONF_DIR}/.cert_basename" 2>/dev/null || true)
+    old_cert_lineage=$(cat "${CONF_DIR}/.cert_lineage" 2>/dev/null || true)
     DOMAIN="$new_domain"
     install_cert
     mkdir -p "$CONF_DIR" /etc/mosdns
     echo "$DOMAIN" > "${CONF_DIR}/.domain"
     echo "$DOMAIN" > /etc/mosdns/.domain
-    rm -f "${CONF_DIR}/.cert_basename"
+    rm -f "${CONF_DIR}/.cert_basename" "${CONF_DIR}/.cert_lineage"
     if [[ -f /usr/local/bin/update-mosdns-rules.sh ]]; then
         if ! /usr/local/bin/update-mosdns-rules.sh; then
             restore_or_remove_file "$old_conf_domain" "${CONF_DIR}/.domain"
             restore_or_remove_file "$old_mosdns_domain" /etc/mosdns/.domain
             restore_or_remove_file "$old_cert_basename" "${CONF_DIR}/.cert_basename"
+            restore_or_remove_file "$old_cert_lineage" "${CONF_DIR}/.cert_lineage"
             /usr/local/bin/update-mosdns-rules.sh >/dev/null 2>&1 || true
             err "mosdns config update failed; DoT domain rolled back"
             exit 1
@@ -401,6 +561,7 @@ set_dot_domain() {
         restore_or_remove_file "$old_conf_domain" "${CONF_DIR}/.domain"
         restore_or_remove_file "$old_mosdns_domain" /etc/mosdns/.domain
         restore_or_remove_file "$old_cert_basename" "${CONF_DIR}/.cert_basename"
+        restore_or_remove_file "$old_cert_lineage" "${CONF_DIR}/.cert_lineage"
         err "mosdns restart failed; DoT domain rolled back"
         exit 1
     fi
@@ -409,7 +570,7 @@ set_dot_domain() {
 }
 
 force_set_dot_domain() {
-    local new_domain="${1:-}" resolved="" old_conf_domain="" old_mosdns_domain="" old_cert_basename=""
+    local new_domain="${1:-}" resolved="" old_conf_domain="" old_mosdns_domain="" old_cert_basename="" old_cert_lineage=""
     [[ -n "$new_domain" ]] || { err "Usage: $0 --set-dot-domain-force <domain>"; exit 1; }
     if ! is_valid_domain "$new_domain"; then
         err "Invalid domain: '$new_domain'. Provide a fully-qualified domain like dns.example.com"
@@ -423,16 +584,18 @@ force_set_dot_domain() {
     old_conf_domain=$(cat "${CONF_DIR}/.domain" 2>/dev/null || true)
     old_mosdns_domain=$(cat /etc/mosdns/.domain 2>/dev/null || true)
     old_cert_basename=$(cat "${CONF_DIR}/.cert_basename" 2>/dev/null || true)
+    old_cert_lineage=$(cat "${CONF_DIR}/.cert_lineage" 2>/dev/null || true)
     DOMAIN="$new_domain"
     mkdir -p "$CONF_DIR" /etc/mosdns
     echo "$DOMAIN" > "${CONF_DIR}/.domain"
     echo "$DOMAIN" > /etc/mosdns/.domain
-    rm -f "${CONF_DIR}/.cert_basename"
+    rm -f "${CONF_DIR}/.cert_basename" "${CONF_DIR}/.cert_lineage"
     if [[ -f /usr/local/bin/update-mosdns-rules.sh ]]; then
         if ! /usr/local/bin/update-mosdns-rules.sh; then
             restore_or_remove_file "$old_conf_domain" "${CONF_DIR}/.domain"
             restore_or_remove_file "$old_mosdns_domain" /etc/mosdns/.domain
             restore_or_remove_file "$old_cert_basename" "${CONF_DIR}/.cert_basename"
+            restore_or_remove_file "$old_cert_lineage" "${CONF_DIR}/.cert_lineage"
             /usr/local/bin/update-mosdns-rules.sh >/dev/null 2>&1 || true
             err "mosdns config update failed; DoT domain rolled back"
             exit 1
@@ -441,6 +604,7 @@ force_set_dot_domain() {
         restore_or_remove_file "$old_conf_domain" "${CONF_DIR}/.domain"
         restore_or_remove_file "$old_mosdns_domain" /etc/mosdns/.domain
         restore_or_remove_file "$old_cert_basename" "${CONF_DIR}/.cert_basename"
+        restore_or_remove_file "$old_cert_lineage" "${CONF_DIR}/.cert_lineage"
         err "mosdns restart failed; DoT domain rolled back"
         exit 1
     fi
