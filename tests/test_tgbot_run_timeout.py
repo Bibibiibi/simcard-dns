@@ -17,7 +17,13 @@ def alive(pid):
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
-    return True
+    # A killed process stays a zombie until its new parent reaps it; container
+    # PID 1 (CI distro jobs) often never does. A zombie is not running.
+    try:
+        with open("/proc/%d/stat" % pid, encoding="utf-8") as handle:
+            return handle.read().rsplit(")", 1)[1].split()[0] != "Z"
+    except (OSError, IndexError):
+        return True
 
 
 class RunTimeoutTest(unittest.TestCase):
