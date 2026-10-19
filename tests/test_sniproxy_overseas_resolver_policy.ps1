@@ -24,16 +24,26 @@ if (-not $mainInstallMatch.Success) {
 }
 
 $mainInstall = $mainInstallMatch.Value
-$certificateIndex = $mainInstall.IndexOf('run_install_step "配置域名与 TLS 证书"')
 $servicesIndex = $mainInstall.IndexOf('run_install_step "部署网络服务"')
-
-if ($certificateIndex -lt 0 -or $servicesIndex -lt 0 -or $certificateIndex -gt $servicesIndex) {
-    throw "configure_dns_upstreams must run before install_sniproxy so sniproxy resolver uses custom remote DNS"
+# Both certificate paths (Cloudflare default, own domain via DOMAIN) must run
+# before the services are deployed.
+foreach ($stage in @('run_install_step "签发证书并创建 DoT 域名（Cloudflare）"', 'run_install_step "配置域名与 TLS 证书"')) {
+    $certificateIndex = $mainInstall.IndexOf($stage)
+    if ($certificateIndex -lt 0 -or $servicesIndex -lt 0 -or $certificateIndex -gt $servicesIndex) {
+        throw "configure_dns_upstreams must run before install_sniproxy so sniproxy resolver uses custom remote DNS ($stage)"
+    }
 }
 
-$certificateStageMatch = [regex]::Match($install, '(?s)install_stage_certificate\(\) \{.*?\n\}')
-if (-not $certificateStageMatch.Success -or -not $certificateStageMatch.Value.Contains("configure_dns_upstreams")) {
-    throw "install_stage_certificate must configure DNS before service deployment"
+$dnsStageMatch = [regex]::Match($install, '(?s)install_stage_dns_settings\(\) \{.*?\n\}')
+if (-not $dnsStageMatch.Success -or -not $dnsStageMatch.Value.Contains("configure_dns_upstreams")) {
+    throw "install_stage_dns_settings must configure DNS before service deployment"
+}
+foreach ($name in @('install_stage_certificate', 'install_stage_cloudflare_certificate')) {
+    $stageMatch = [regex]::Match($install, '(?s)' + $name + '\(\) \{.*?\n\}')
+    $configuresDns = $stageMatch.Success -and $stageMatch.Value.Contains("install_stage_dns_settings")
+    if (-not $configuresDns) {
+        throw "$name must configure DNS before service deployment"
+    }
 }
 
 $servicesStageMatch = [regex]::Match($install, '(?s)install_stage_deploy\(\) \{.*?\n\}')

@@ -15,6 +15,8 @@ cleanup() {
 }
 trap cleanup EXIT
 fail() { echo "$1" >&2; exit 1; }
+# Byte-for-byte compare without cmp (diffutils is missing in minimal images).
+cmp() { [[ "$1" == -s ]] && shift; python3 -c 'import filecmp,sys; sys.exit(0 if filecmp.cmp(sys.argv[1], sys.argv[2], shallow=False) else 1)' "$1" "$2"; }
 
 info() { :; }; warn() { :; }; ok() { :; }; err() { echo "$*" >&2; }
 routing_lock() { :; }

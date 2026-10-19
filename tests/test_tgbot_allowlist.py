@@ -1,5 +1,7 @@
 import importlib.util
+import os
 from pathlib import Path
+import tempfile
 import unittest
 
 
@@ -69,12 +71,12 @@ class AllowlistTest(unittest.TestCase):
         self.assertEqual([b["callback_data"] for row in kb for b in row], ["menu:main"])
 
     def test_main_menu_geo_button_shows_state(self):
-        import tempfile, os
         with tempfile.TemporaryDirectory() as d:
             conf = os.path.join(d, "geo-allow.conf")
             self.addCleanup(setattr, bot, "GEO_CONF_PATH", bot.GEO_CONF_PATH)
             bot.GEO_CONF_PATH = conf
-            label = lambda: [b for row in bot.main_menu() for b in row if b["callback_data"] == "menu:geo"][0]["text"]
+            def label():
+                return [b for row in bot.main_menu() for b in row if b["callback_data"] == "menu:geo"][0]["text"]
             self.assertEqual(label(), "🌏 港澳台连接 · 已关闭")
             with open(conf, "w", encoding="utf-8") as fh:
                 fh.write("# x\nGEO_ALLOW=on\nGEO_PORTS=22,853,8111\n")

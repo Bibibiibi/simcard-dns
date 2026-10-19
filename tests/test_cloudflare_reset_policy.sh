@@ -65,7 +65,8 @@ trap 'kill $cf_pid 2>/dev/null; rm -rf "${tmp}"' EXIT
 for _ in $(seq 1 50); do [[ -s "${tmp}/port" ]] && break; sleep 0.1; done
 PGW_CF_API="http://127.0.0.1:$(cat "${tmp}/port")"
 export PGW_CF_API
-state() { curl -s "${PGW_CF_API}/__state" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["result"]))'; }
+# python3, not curl: the CI distro containers have no curl.
+state() { python3 -c 'import json,sys,urllib.request; print(json.dumps(json.load(urllib.request.urlopen(sys.argv[1]))["result"]))' "${PGW_CF_API}/__state"; }
 
 # --- environment and mocks ----------------------------------------------------
 CONF_DIR="${tmp}/conf"; mkdir -p "$CONF_DIR"
