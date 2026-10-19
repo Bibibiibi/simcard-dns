@@ -32,7 +32,8 @@ function Assert-NotContains {
 
 Assert-Contains $install 'ip saddr { __CLIENT_CIDRS__ } tcp dport { 80, 443 } accept' 'nft TCP reverse proxy client allow'
 Assert-Contains $install 'ip saddr { __CLIENT_CIDRS__ } udp dport 443 accept' 'nft UDP reverse proxy client allow'
-Assert-Contains $install 'DEFAULT_CLIENT_CIDRS="74.119.64.0/21 103.143.92.0/23 202.75.248.0/22 203.223.17.0/24 203.223.18.0/23 203.223.20.0/24"' 'default client networks (CTMO)'
+Assert-NotContains $install 'DEFAULT_CLIENT_CIDRS' 'no carrier is built in as the default client network'
+Assert-Contains $install 'CLIENT_NONE="0.0.0.0/32"' 'no client networks match nobody in the firewall'
 Assert-NotContains $install '172.22.0.0/16' 'private client network is no longer built in'
 Assert-NotContains $install 'ip saddr 0.0.0.0/0' 'reverse proxy must never be opened to every source'
 Assert-Contains $install 'tcp dport 853 meter dns_rate_dot' 'nft DoT per-IP QPS rate limit'

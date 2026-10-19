@@ -23,6 +23,14 @@ class AllowlistTest(unittest.TestCase):
             return outputs[argv[2]]
         bot.run2 = run2
 
+    def test_view_asks_for_the_first_asn_when_empty(self):
+        # No carrier is built in: the operator adds the first ASN here.
+        self.fake({"--list-client-asns": (True, ""), "--geo-allow": (True, self.GEO_OFF)})
+        text, kb = bot.allowlist_view()
+        self.assertIn("还没有客户端网段", text)
+        self.assertIn("ipinfo.io", text)
+        self.assertIn("asn:add", [b["callback_data"] for row in kb for b in row])
+
     def test_parse_asn(self):
         self.assertEqual(bot.parse_asn("AS63527"), "AS63527")
         self.assertEqual(bot.parse_asn(" as063527 "), "AS63527")

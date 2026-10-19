@@ -83,13 +83,7 @@ sudo /opt/simcard-dns/bin/simcard-dns --set-policy Netflix hk
 
 手机卡直接通过公网连接服务器。运营商分配给手机的**公网出口网段**就是客户端网段：这些来源发起的 DoT 查询中，非国内域名会解析为服务器 IP，流量经公网进入服务器的 TCP/QUIC 代理。
 
-默认客户端网段是 CTMO（中国电信澳门，AS136167）公布的 IPv4 前缀：
-
-```text
-74.119.64.0/21 103.143.92.0/23 202.75.248.0/22 203.223.17.0/24 203.223.18.0/23 203.223.20.0/24
-```
-
-使用 CTMO 卡时安装后即可使用；其他运营商按下面步骤修改。
+项目不内置任何运营商的网段。安装后在 Telegram Bot「🛡 白名单」添加运营商 ASN（如 `AS9231`，可加多个），或按下面步骤用命令设置；添加之前不会有设备被引到服务器。
 
 1. **确认手机出口 IP**：关闭 Wi-Fi、只用蜂窝数据，在手机浏览器打开任意 IP 查询网站；或者先把手机私人 DNS 指向服务器，再在服务器上查看 DoT 连接来源：
 
@@ -106,9 +100,9 @@ sudo /opt/simcard-dns/bin/simcard-dns --set-policy Netflix hk
    sudo /opt/simcard-dns/bin/simcard-dns --status   # 查看 Client CIDRs
    ```
 
-   首次安装可直接设置 `CLIENT_CIDRS="203.0.113.0/24 198.51.100.0/22"`。
+   首次安装也可以预先设置 `CLIENT_CIDRS="203.0.113.0/24 198.51.100.0/22"`。
 
-   也可以按运营商的 ASN 整体加入或删除（网段来自 RIPEstat 公开路由数据，只取 IPv4）。默认的 CTMO 网段登记为 `AS136167`；删除某个 ASN 只移除它自己的网段，其他 ASN 和手动网段保留：
+   也可以按运营商的 ASN 整体加入或删除（网段来自 RIPEstat 公开路由数据，只取 IPv4）。安装时填写的 ASN 也会登记在这里；删除某个 ASN 只移除它自己的网段，其他 ASN 和手动网段保留：
 
    ```bash
    sudo /opt/simcard-dns/bin/simcard-dns --lookup-client-asn AS63527   # 只查询，不修改
@@ -218,7 +212,7 @@ sudo /opt/simcard-dns/bin/simcard-dns --setup-tgbot
 
 ```bash
 DOMAIN="dns.example.com"        # DoT 域名（必需）
-CLIENT_CIDRS="103.143.92.0/23 ..."  # 客户端网段（运营商出口网段），默认 CTMO（见“手机卡接入”）
+CLIENT_CIDRS="203.0.113.0/24 ..."   # 可选：客户端网段（通常装好后在 Bot 添加 ASN）
 EMAIL="admin@example.com"       # ACME 邮箱
 REMOTE_DNS="1.1.1.1,8.8.8.8,9.9.9.9"     # 海外 DNS 池
 LOCAL_DNS="101.226.4.6,218.30.118.6,180.76.76.76,119.29.29.29"  # 国内 DNS 竞速池（4路 UDP 并发）
@@ -276,7 +270,7 @@ sudo /opt/simcard-dns/bin/simcard-dns --update-rules
 
 面向手机卡经公网接入的轻量透明代理场景：
 
-- 客户端网段（运营商公网出口网段，默认 CTMO）的手机把私人 DNS（DoT）指向网关。
+- 客户端网段（运营商公网出口网段，安装时由操作者指定）的手机把私人 DNS（DoT）指向网关。
 - ChinaList 域名（所有来源）走国内 DNS 竞速代理（4 路 UDP 并发 + TCP fallback + 海外兜底含 `22.22.22.22`），保持本地访问体验。
 - 客户端网段来源只有命中分流规则（含规则集、GEOSITE）的 A 查询返回服务器 IP，流量进入 TCP/QUIC 代理并按规则选择出口；规则目标为 `block` 的直接拒绝；其余域名正常解析（ChinaList 走国内 DNS，其他走海外 DNS），手机直连。
 - 其他来源：被墙域名不劫持，正常海外解析；其他域名也正常海外解析。

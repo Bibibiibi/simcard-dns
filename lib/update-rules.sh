@@ -16,9 +16,6 @@ MOSDNS_TEMPLATE="${BASE_DIR}/config.yaml.template"
 MOSDNS_CONF="${BASE_DIR}/config.yaml"
 DEFAULT_REMOTE_DNS=("1.1.1.1" "8.8.8.8" "9.9.9.9")
 DEFAULT_LOCAL_DNS=("101.226.4.6" "218.30.118.6" "180.76.76.76" "119.29.29.29")
-# Default client networks: CTMO / China Telecom (Macau), AS136167 announced
-# IPv4 prefixes (2026-10). Other carriers: --set-client-cidrs / CLIENT_CIDRS.
-DEFAULT_CLIENT_CIDRS="74.119.64.0/21 103.143.92.0/23 202.75.248.0/22 203.223.17.0/24 203.223.18.0/23 203.223.20.0/24"
 
 normalize_domain() {
     local domain="${1:-}"
@@ -276,7 +273,8 @@ render_config() {
     remote_dns=$(cat "$BASE_DIR/.remote_dns" 2>/dev/null || printf '%s ' "${DEFAULT_REMOTE_DNS[@]}")
     local_dns=$(cat "$BASE_DIR/.local_dns" 2>/dev/null || printf '%s ' "${DEFAULT_LOCAL_DNS[@]}")
     client_cidrs=$(cat "$BASE_DIR/.client_cidrs" 2>/dev/null || true)
-    [[ -n "$client_cidrs" ]] || client_cidrs="$DEFAULT_CLIENT_CIDRS"
+    # No client networks yet (added later in the bot): match nobody.
+    [[ -n "${client_cidrs//[[:space:]]/}" ]] || client_cidrs="0.0.0.0/32"
     cache_size=$(cat "$BASE_DIR/.cache_size" 2>/dev/null || echo 500000)
     [[ "$cache_size" =~ ^[0-9]+$ ]] || cache_size=500000
     remote_primary=$(yaml_upstreams "$remote_dns" "1.1.1.1 8.8.8.8 9.9.9.9" primary udp)

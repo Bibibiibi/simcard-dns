@@ -1981,6 +1981,10 @@ def allowlist_view(notice=""):
     if asns:
         for asn, holder, count in asns:
             lines.append("• <b>%s</b>  %s（%s 段）" % (html.escape(asn), html.escape(holder), html.escape(count)))
+    elif not others:
+        lines += ["⚠️ <b>还没有客户端网段</b>：在此之前不会有任何设备被引到服务器。",
+                  "点「➕ 添加 ASN」输入你的手机卡运营商 ASN。不知道 ASN？手机关闭 Wi-Fi，"
+                  "用浏览器打开 ipinfo.io，org 栏开头的 AS 号码就是。"]
     else:
         lines.append("（还没有按 ASN 添加的白名单）")
     if others:

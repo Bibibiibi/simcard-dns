@@ -10,7 +10,7 @@
 - 架构为 `amd64` 或 `arm64`，内存至少 512 MB（推荐 1 GB 以上）。
 - 以 root 运行，并准备公网 IPv4。
 - 准备托管在 Cloudflare 的域名与 API Token（权限：Zone → Zone → Read、Zone → DNS → Edit），以及 Telegram Bot Token 和管理员 ID（两者都是必填）。
-- 检查端口：公网 TCP 853（DoT），需要时开放 TCP 8111（iOS 描述文件）；使用自有域名（`DOMAIN`）时还需要 TCP 80（证书验证）；客户端网段（运营商出口网段，默认 CTMO）需要 TCP 80/443 和 UDP 443。默认 `FIREWALL_MODE=preserve`，脚本不会接管主机防火墙。
+- 检查端口：公网 TCP 853（DoT），需要时开放 TCP 8111（iOS 描述文件）；使用自有域名（`DOMAIN`）时还需要 TCP 80（证书验证）；客户端网段（运营商出口网段，安装时由你指定）需要 TCP 80/443 和 UDP 443。默认 `FIREWALL_MODE=preserve`，脚本不会接管主机防火墙。
 
 ## 2. 首次安装
 
@@ -26,6 +26,8 @@ curl -fsSL https://raw.githubusercontent.com/Bibibiibi/simcard-dns/main/install.
 curl -fsSL https://raw.githubusercontent.com/Bibibiibi/simcard-dns/main/install.sh | \
   sudo env CF_API_TOKEN=<token> TG_BOT_TOKEN=<bot-token> TG_ADMIN_IDS=<你的 ID> bash
 ```
+
+装好后在 Telegram Bot「🛡 白名单」添加手机卡运营商 ASN（项目不内置任何运营商）；添加之前不会有设备被引到服务器。
 
 进阶：没有 Cloudflare 时设置 `DOMAIN` 改用自有域名（A 记录需先指向服务器，证书走 HTTP-01，需要 TCP 80）：
 

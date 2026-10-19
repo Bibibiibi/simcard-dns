@@ -48,6 +48,7 @@ simcard-dns 是一套裝在 Linux 伺服器上的閘道。它同時是一台加�
 | 架構 | `amd64` 或 `arm64` |
 | 記憶體 | 至少 512 MB，建議 1 GB 以上 |
 | 網路 | 公網 IPv4、root 權限 |
+| 手機卡 | 知道你的電信業者 ASN（安裝後在 Bot 加入） |
 | Cloudflare | 一個託管在 Cloudflare 的網域，以及一組 API Token（權限：Zone → Zone → Read、Zone → DNS → Edit） |
 | Telegram | 向 @BotFather 申請的 Bot Token，以及你自己的 Telegram 數字 ID（可向 @userinfobot 查詢） |
 
@@ -75,7 +76,9 @@ curl -fsSL https://raw.githubusercontent.com/Bibibiibi/simcard-dns/main/install.
 
 ### 3. 告訴伺服器誰是你的手機
 
-預設的客戶端網段是中國電信澳門（CTMO，AS136167）。換成你的電信業者：
+專案沒有內建任何電信業者。安裝完成後，在 Telegram Bot「🛡 白名單」按「➕ 添加 ASN」，輸入你手機卡業者的 ASN（例如 `AS9231`，有多張卡就加多個）。只有這些網段的手機會被引到伺服器、能使用代理；加入之前不會有任何設備經過伺服器。不知道 ASN 的話，手機關掉 Wi‑Fi 用瀏覽器打開 https://ipinfo.io ，`org` 欄開頭的 AS 號碼就是。
+
+也可以用指令操作：
 
 ```bash
 sudo simcard-dns --lookup-client-asn AS9231   # 先看業者名稱與網段數

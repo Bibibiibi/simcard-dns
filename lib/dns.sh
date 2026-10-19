@@ -377,7 +377,6 @@ set_client_cidrs() {
 # one subtracts them again while keeping every other ASN and any CIDRs that
 # were set by hand. Prefixes come from RIPEstat (public BGP data).
 CLIENT_ASN_DIR="${PGW_CLIENT_ASN_DIR:-/etc/simcard-dns/client-asns}"
-CTMO_ASN="AS136167"
 
 client_asn_tool() {
     python3 - "$@" <<'PY'
@@ -446,17 +445,9 @@ normalize_asn() {
     printf 'AS%s\n' "$((10#$value))"
 }
 
-# First use: register the built-in CTMO default as AS136167 when the current
-# list still contains it, so it can be listed and deleted like any other ASN.
 client_asn_bootstrap() {
     [[ -d "$CLIENT_ASN_DIR" ]] && return 0
-    mkdir -p "$CLIENT_ASN_DIR" && chmod 700 "$CLIENT_ASN_DIR" || return 1
-    local cur
-    cur="$(current_client_cidrs)" || return 1
-    if [[ "$(client_asn_tool covers "$cur" "$DEFAULT_CLIENT_CIDRS")" == yes ]]; then
-        { printf '# CHINATELECOM-AS-AP - China Telecom (Macau) (CTMO)\n'; tr ' ' '\n' <<< "$DEFAULT_CLIENT_CIDRS"; } \
-            > "${CLIENT_ASN_DIR}/${CTMO_ASN}.txt"
-    fi
+    mkdir -p "$CLIENT_ASN_DIR" && chmod 700 "$CLIENT_ASN_DIR"
 }
 
 client_asn_prefixes() {

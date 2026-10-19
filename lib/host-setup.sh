@@ -293,7 +293,7 @@ firewall_preserve_hints() {
     info "FIREWALL_MODE=preserve: leaving the existing host firewall untouched."
     info "Make sure these inbound ports are open (SSH detected on: ${ssh_ports}):"
     info "  TCP ${ssh_ports} (SSH), 853 (DoT), 8111 (iOS profile)"
-    info "  From ${client_nets} only: TCP 80/443 and UDP 443 (reverse proxy)"
+    info "  From ${client_nets:-<no client networks yet: add them in the bot>} only: TCP 80/443 and UDP 443 (reverse proxy)"
     info "  Recommended: per-IP rate limit 10000 qps on DoT 853"
     info "  TCP 80 must be reachable while Let's Encrypt issues/renews the cert."
 }
@@ -452,9 +452,11 @@ table inet filter {
 # reloaded independently after partial firewall reloads.
 include "/etc/simcard-dns/pgw-exit.nft"
 EOF
+        # No client networks yet: a set that matches nobody (nft needs one element).
+        local nft_clients="${client_nets:-$CLIENT_NONE}"
         # Regional allowlist (off unless --geo-allow on): sets + chain geo_gate.
         write_geo_allow_nft || { rm -f "$tmp_conf"; warn "Regional allowlist failed to render; existing firewall left unchanged."; return 1; }
-        sed -i -e "s/__TCP_PORTS__/${tcp_ports}/" -e "s#__CLIENT_CIDRS__#${client_nets// /, }#g" \
+        sed -i -e "s/__TCP_PORTS__/${tcp_ports}/" -e "s#__CLIENT_CIDRS__#${nft_clients// /, }#g" \
             -e "s#__GEO_NFT__#${GEO_NFT}#" "$tmp_conf" || return 1
         if ! nft -c -f "$tmp_conf" >/dev/null 2>&1; then
             rm -f "$tmp_conf"

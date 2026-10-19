@@ -14,8 +14,8 @@ has "$template" 'client_ip __CLIENT_CIDRS__' \
     "mosdns must identify the client networks by source address"
 has "$rules" '"__CLIENT_CIDRS__": client_cidrs' \
     "the renderer must substitute the configured client networks"
-has "$rules" 'client_cidrs="$DEFAULT_CLIENT_CIDRS"' \
-    "installs without a stored client list must use the default client networks"
+has "$rules" 'client_cidrs="0.0.0.0/32"' \
+    "without client networks the renderer must match nobody (no built-in carrier)"
 [[ "$template$rules" != *'172.22.'* ]] || fail "the private 172.22.0.0/16 network must not be built in"
 has "$template" 'exec: goto proxy_client' \
     "client networks must enter the synthetic proxy policy"

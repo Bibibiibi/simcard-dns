@@ -2,8 +2,9 @@
 # shellcheck disable=SC2034,SC2317 # Globals/mocks are used by eval-loaded functions.
 # ASN allowlist: adding an ASN unions its announced IPv4 prefixes into the
 # client list; deleting subtracts them again while keeping other ASNs and
-# hand-set CIDRs. The built-in CTMO default is registered as AS136167.
+# hand-set CIDRs. No carrier is built in; the operator adds ASNs in the bot.
 set -euo pipefail
+exec </dev/null  # install-time questions must never wait for a terminal here
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 tmp="$(mktemp -d)"
@@ -16,10 +17,9 @@ done
 for fn in client_asn_tool normalize_asn client_asn_bootstrap client_asn_prefixes list_client_asns lookup_client_asn add_client_asn del_client_asn; do
     eval "$(awk "/^${fn}\\(\\)/,/^}/" "${root}/lib/dns.sh")"
 done
-eval "$(grep '^DEFAULT_CLIENT_CIDRS=' "${root}/install.sh")"
+BASE_CIDRS="74.119.64.0/21 103.143.92.0/23"
 CLIENT_CIDRS_FILE="${tmp}/client_cidrs"
 CLIENT_ASN_DIR="${tmp}/asns"
-CTMO_ASN="AS136167"
 routing_lock() { :; }
 check_root() { :; }
 # The real set_client_cidrs re-renders DNS/firewall; here it only records.
@@ -44,11 +44,11 @@ mock_asn AS64501 "IPV6-ONLY"
 normalize_asn AS0 >/dev/null && fail "AS0 is invalid"
 normalize_asn 'AS1;rm' >/dev/null && fail "garbage must be rejected"
 
-# First use registers the built-in CTMO default; a hand-set CIDR is "other".
-echo "$DEFAULT_CLIENT_CIDRS 192.0.2.0/24" > "$CLIENT_CIDRS_FILE"
+# No carrier is built in: hand-set CIDRs are "other", nothing is registered.
+echo "$BASE_CIDRS 192.0.2.0/24" > "$CLIENT_CIDRS_FILE"
 out="$(list_client_asns)"
-grep -q $'^AS136167\tCHINATELECOM-AS-AP' <<< "$out" || fail "CTMO default must be registered as AS136167"
-grep -q $'^OTHER\t1\t192.0.2.0/24$' <<< "$out" || fail "hand-set CIDRs must be listed as OTHER: $out"
+grep -q '^AS' <<< "$out" && fail "no ASN may be registered by default: $out"
+grep -q $'^OTHER\t' <<< "$out" || fail "hand-set CIDRs must be listed as OTHER: $out"
 
 # Lookup is read-only and IPv4 only.
 [[ "$(lookup_client_asn 63527)" == $'AS63527\tCTGL-AS - China Telecom Global Limited\t3\t1024' ]] \
@@ -82,9 +82,18 @@ PY
 ( del_client_asn AS63527 ) 2>/dev/null && fail "deleting an absent ASN must fail"
 
 # Never allow an empty allowlist.
-echo "$DEFAULT_CLIENT_CIDRS" > "$CLIENT_CIDRS_FILE"; rm -rf "$CLIENT_ASN_DIR"
-( del_client_asn AS136167 ) 2>/dev/null && fail "removing the last allowlisted network must be refused"
-[[ "$(cat "$CLIENT_CIDRS_FILE")" == "$DEFAULT_CLIENT_CIDRS" ]] || fail "refused delete must not change the list"
+rm -rf "$CLIENT_ASN_DIR"; echo "203.12.88.0/24 198.51.100.0/24" > "$CLIENT_CIDRS_FILE"
+add_client_asn AS64500 >/dev/null
+( del_client_asn AS64500 ) 2>/dev/null && fail "removing the last allowlisted network must be refused"
+[[ "$(cat "$CLIENT_CIDRS_FILE")" == "198.51.100.0/24 203.12.88.0/24" ]] || fail "refused delete must not change the list"
+
+# --- no built-in carrier: an empty list is "not set yet" --------------------------
+grep -q 'collect_client_networks' "${root}/install.sh" && fail "the installer must not ask; client networks are added in the bot"
+rm -f "$CLIENT_CIDRS_FILE"
+[[ -z "$(current_client_cidrs)" ]] || fail "with nothing configured there must be no client networks"
+rm -rf "$CLIENT_ASN_DIR"
+add_client_asn AS63527 >/dev/null || fail "the first ASN must be addable to an empty list (the bot flow)"
+[[ "$(cat "$CLIENT_CIDRS_FILE")" == "63.140.1.0/24 63.140.2.0/24 203.12.88.0/23" ]] || fail "first ASN must become the whole list"
 
 # Managed firewall: only the two client source sets are rewritten in place.
 eval "$(awk '/^refresh_managed_client_rules\(\)/,/^}/' "${root}/lib/host-setup.sh")"

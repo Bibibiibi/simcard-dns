@@ -851,7 +851,9 @@ show_status() {
     local cur_exit="local"
     [[ -f "${CONF_DIR}/current-exit" ]] && cur_exit="$(cat "${CONF_DIR}/current-exit" 2>/dev/null || echo local)"
     echo "Egress exit: ${cur_exit}"
-    echo "Client CIDRs: $(current_client_cidrs 2>/dev/null || echo invalid)"
+    local status_clients
+    status_clients="$(current_client_cidrs 2>/dev/null)" || status_clients="invalid"
+    echo "Client CIDRs: ${status_clients:-none yet (add your carrier ASN in the bot: 🛡 白名单)}"
     if [[ -f /etc/mosdns/.cache_size ]]; then
         local cs; cs="$(cat /etc/mosdns/.cache_size 2>/dev/null || echo '?')"
         echo "Mem profile: $([[ "$cs" -le 50000 ]] 2>/dev/null && echo low-memory || echo standard) (mosdns cache=${cs})"

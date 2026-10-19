@@ -291,13 +291,18 @@ print(" ".join(str(n) for n in ipaddress.collapse_addresses(nets)))
 PY
 }
 
-# Effective client networks: CLIENT_CIDRS env > persisted file > default.
+# Effective client networks: CLIENT_CIDRS env > persisted file. There is no
+# built-in default: until the operator adds some (bot or --add-client-asn)
+# this prints nothing and no device is proxied.
 current_client_cidrs() {
     local value="${CLIENT_CIDRS:-}"
     [[ -n "$value" ]] || value="$(cat "${CLIENT_CIDRS_FILE}" 2>/dev/null || true)"
-    [[ -n "$value" ]] || value="${DEFAULT_CLIENT_CIDRS}"
+    [[ -n "${value//[[:space:]]/}" ]] || return 0
     normalize_client_cidrs "$value"
 }
+# For rule generators that need at least one network: 0.0.0.0/32 is never a
+# real source address, so "no client networks" matches nobody.
+CLIENT_NONE="0.0.0.0/32"
 
 ensure_proxy_user() {
     if id -u "${EXIT_USER}" >/dev/null 2>&1; then

@@ -39,9 +39,8 @@ MIHOMO_VERSION_DEFAULT="1.19.28"
 MOSDNS_VERSION_DEFAULT="5.3.4"
 DEFAULT_REMOTE_DNS=("1.1.1.1" "8.8.8.8" "9.9.9.9")
 DEFAULT_LOCAL_DNS=("101.226.4.6" "218.30.118.6" "180.76.76.76" "119.29.29.29")
-# Default client networks: CTMO / China Telecom (Macau), AS136167 announced
-# IPv4 prefixes (2026-10). Other carriers: --set-client-cidrs / CLIENT_CIDRS.
-DEFAULT_CLIENT_CIDRS="74.119.64.0/21 103.143.92.0/23 202.75.248.0/22 203.223.17.0/24 203.223.18.0/23 203.223.20.0/24"
+# Client networks have no built-in default: the operator adds them after the
+# install (Telegram bot "🛡 白名单", --add-client-asn, or CLIENT_CIDRS).
 CLIENT_CIDRS_FILE="/etc/mosdns/.client_cidrs"
 bootstrap_err() { printf 'Error: %s\n' "$*" >&2; }
 
@@ -327,7 +326,7 @@ Options:
   --set-client-cidrs "<cidr> [cidr...]"
                  Set the public client networks (e.g. a mobile carrier's
                  egress ranges) that get proxied DNS answers and may use the
-                 reverse proxy. Default: CTMO (AS136167) prefixes.
+                 reverse proxy. None until you add them (no default).
   --list-client-asns
                  List allowlisted ASNs and any hand-set client CIDRs.
   --lookup-client-asn <ASN>
@@ -397,8 +396,9 @@ Environment variables (for non-interactive use):
   LOCAL_DNS      Domestic ChinaList DNS upstreams, IP[:port] list
   DNS_UPSTREAMS / OVERSEAS_DNS / PRIVATE_OVERSEAS_DNS / SNIPROXY_DNS
                  Backward-compatible aliases for REMOTE_DNS
-  CLIENT_CIDRS   Public client networks for proxied DNS + reverse proxy, IPv4
-                 CIDR list (default: CTMO AS136167); kept across upgrades
+  CLIENT_CIDRS   Optional client networks (IPv4 CIDRs). Normally left unset and
+                 added after the install in the bot (🛡 白名单) or with
+                 --add-client-asn; until then no device is proxied
   EMAIL          Email for Let's Encrypt
   TG_BOT_TOKEN   Telegram bot token (required for a fresh install)
   TG_ADMIN_IDS   Comma-separated Telegram numeric IDs allowed to operate the bot (required)
@@ -550,6 +550,10 @@ main_install() {
   iOS:  http://${DOMAIN}:${IOS_PROFILE_PORT}/ios-dot.mobileconfig
   管理: ${BASE_DIR}/bin/simcard-dns --status
 EOF
+    if [[ -z "$(current_client_cidrs 2>/dev/null)" ]]; then
+        printf '\n  %b下一步%b：在 Telegram Bot「🛡 白名单」添加你的手机卡运营商 ASN，\n' "$YELLOW" "$NC"
+        printf '  在此之前不会有任何设备被引到服务器。\n'
+    fi
     echo ""
 }
 
