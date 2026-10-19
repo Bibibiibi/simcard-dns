@@ -20,7 +20,7 @@ function Assert-Contains {
 }
 
 Assert-Contains $install 'DEFAULT_REMOTE_DNS=("1.1.1.1" "8.8.8.8" "9.9.9.9")' 'default remote overseas DNS pool'
-Assert-Contains $install 'DEFAULT_LOCAL_DNS=("101.226.4.6" "218.30.118.6" "180.76.76.76" "119.29.29.29")' 'default local China DNS race pool'
+Assert-Contains $install 'DEFAULT_LOCAL_DNS=("223.5.5.5" "119.29.29.29")' 'default local China DNS race pool'
 Assert-Contains $install 'configure_dns_upstreams()' 'installer DNS function'
 Assert-Contains $install 'REMOTE_DNS' 'installer remote DNS variable'
 Assert-Contains $install 'LOCAL_DNS' 'installer local DNS variable'

@@ -215,7 +215,7 @@ DOMAIN="dns.example.com"        # DoT 域名（必需）
 CLIENT_CIDRS="203.0.113.0/24 ..."   # 可选：客户端网段（通常装好后在 Bot 添加 ASN）
 EMAIL="admin@example.com"       # ACME 邮箱
 REMOTE_DNS="1.1.1.1,8.8.8.8,9.9.9.9"     # 海外 DNS 池
-LOCAL_DNS="101.226.4.6,218.30.118.6,180.76.76.76,119.29.29.29"  # 国内 DNS 竞速池（4路 UDP 并发）
+LOCAL_DNS="223.5.5.5,119.29.29.29"  # 国内 DNS（默认阿里 + 腾讯，UDP 并发竞速）
 LOWMEM=1                        # 强制低内存模式（≤1GB 自动启用）
 MIHOMO_VERSION="1.19.28"        # 覆盖锁定版；非锁定版本跳过 sha256 校验（安装时 warn）
 MOSDNS_VERSION="5.3.4"          # 覆盖锁定版；行为同 MIHOMO_VERSION
@@ -251,7 +251,7 @@ PGW_TUNING=essential            # essential(默认)/performance 内核调优档�
 
 **为什么不返回 IPv6？** 当前透明代理路径按 IPv4 设计；所有来源的 AAAA 均返回 NOERROR/NODATA。这是保留既有行为，不会自动开放 IPv6 绕过代理。
 
-**为什么国内网站直连？** ChinaList 域名由 mosdns 转发到 4 路国内 DNS 竞速代理（携带 ECS `139.226.48.0/24`），获得更适合大陆访问的结果。UDP 150ms 无响应后自动切 TCP，都不通才走海外兜底（含 `22.22.22.22`），避免单一国内 DNS 故障卡住页面。
+**为什么国内网站直连？** ChinaList 域名由 mosdns 转发到国内 DNS 竞速代理（默认 223.5.5.5、119.29.29.29）（携带 ECS `139.226.48.0/24`），获得更适合大陆访问的结果。UDP 150ms 无响应后自动切 TCP，都不通才走海外兜底（含 `22.22.22.22`），避免单一国内 DNS 故障卡住页面。
 
 **如何更新 DNS 规则？**
 
@@ -271,12 +271,12 @@ sudo /opt/simcard-dns/bin/simcard-dns --update-rules
 面向手机卡经公网接入的轻量透明代理场景：
 
 - 客户端网段（运营商公网出口网段，安装时由操作者指定）的手机把私人 DNS（DoT）指向网关。
-- ChinaList 域名（所有来源）走国内 DNS 竞速代理（4 路 UDP 并发 + TCP fallback + 海外兜底含 `22.22.22.22`），保持本地访问体验。
+- ChinaList 域名（所有来源）走国内 DNS 竞速代理（UDP 并发 + TCP fallback + 海外兜底含 `22.22.22.22`），保持本地访问体验。
 - 客户端网段来源只有命中分流规则（含规则集、GEOSITE）的 A 查询返回服务器 IP，流量进入 TCP/QUIC 代理并按规则选择出口；规则目标为 `block` 的直接拒绝；其余域名正常解析（ChinaList 走国内 DNS，其他走海外 DNS），手机直连。
 - 其他来源：被墙域名不劫持，正常海外解析；其他域名也正常海外解析。
 - wa-shim / sniproxy / quic-proxy 负责 WhatsApp Noise、SNI/Host 和 QUIC 转发，出站由当前出口控制。
 - 所有来源的 AAAA 查询返回 NOERROR/NODATA，保持现有 IPv4-only 透明代理策略，避免 IPv6 绕过代理。
-- 国内 DNS 三层 fallback：UDP 竞速（4 路）→ 150ms 超时后 TCP 竞速 → 都不通时海外兜底（1.1.1.1、8.8.8.8、22.22.22.22）。国际 DNS primary/secondary fallback。
+- 国内 DNS 三层 fallback：UDP 竞速（所有国内 DNS 并发）→ 150ms 超时后 TCP 竞速 → 都不通时海外兜底（1.1.1.1、8.8.8.8、22.22.22.22）。国际 DNS primary/secondary fallback。
 
 支持的出口：本机直出、WireGuard、SOCKS5/SOCKS5H、SS/SS2022、VMess、Trojan、VLESS、Hysteria2、TUIC、AnyTLS、HTTP/HTTPS。URI 类出口由锁定版 mihomo `1.19.28` 提供 TUN 出口和智能分流。
 

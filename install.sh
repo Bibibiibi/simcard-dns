@@ -38,7 +38,7 @@ RULES_IMPORT="/opt/simcard-dns/bin/rules-import.py"
 MIHOMO_VERSION_DEFAULT="1.19.28"
 MOSDNS_VERSION_DEFAULT="5.3.4"
 DEFAULT_REMOTE_DNS=("1.1.1.1" "8.8.8.8" "9.9.9.9")
-DEFAULT_LOCAL_DNS=("101.226.4.6" "218.30.118.6" "180.76.76.76" "119.29.29.29")
+DEFAULT_LOCAL_DNS=("223.5.5.5" "119.29.29.29")
 # Client networks have no built-in default: the operator adds them after the
 # install (Telegram bot "🛡 白名单", --add-client-asn, or CLIENT_CIDRS).
 CLIENT_CIDRS_FILE="/etc/mosdns/.client_cidrs"

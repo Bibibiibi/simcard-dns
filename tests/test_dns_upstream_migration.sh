@@ -12,7 +12,7 @@ info() { :; }
 warn() { :; }
 err() { echo "$*" >&2; }
 DEFAULT_REMOTE_DNS=("1.1.1.1" "8.8.8.8" "9.9.9.9")
-DEFAULT_LOCAL_DNS=("101.226.4.6" "218.30.118.6" "180.76.76.76" "119.29.29.29")
+DEFAULT_LOCAL_DNS=("223.5.5.5" "119.29.29.29")
 CONF_DIR="${tmp}/conf"
 MOSDNS_DIR="$CONF_DIR"
 mkdir -p "$CONF_DIR"
@@ -20,12 +20,12 @@ mkdir -p "$CONF_DIR"
 eval "$(sed -n '/^normalize_dns_upstreams() {/,/^}/p' "${root}/lib/dns.sh")"
 eval "$(sed -n '/^configure_dns_upstreams() {/,/^}/p' "${root}/lib/dns.sh")"
 
-# 1. Empty config -> use defaults (4 China servers, 3 overseas).
+# 1. Empty config -> use defaults (2 China servers, 3 overseas).
 unset REMOTE_DNS LOCAL_DNS DNS_UPSTREAMS OVERSEAS_DNS PRIVATE_OVERSEAS_DNS SNIPROXY_DNS
 configure_dns_upstreams </dev/null
 [[ "$REMOTE_DNS" == "1.1.1.1 8.8.8.8 9.9.9.9" ]] \
     || fail "default international pool was not applied (got: $REMOTE_DNS)"
-[[ "$LOCAL_DNS" == "101.226.4.6 218.30.118.6 180.76.76.76 119.29.29.29" ]] \
+[[ "$LOCAL_DNS" == "223.5.5.5 119.29.29.29" ]] \
     || fail "default domestic pool was not applied (got: $LOCAL_DNS)"
 
 # 2. Saved config from previous install should be preserved.

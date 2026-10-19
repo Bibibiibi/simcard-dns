@@ -69,7 +69,7 @@ has "$template" 'cert: /etc/mosdns/certs/fullchain.pem' "DoT certificate is miss
 has "$rules" 'mode == "primary"' "upstream renderer must split primary and fallback servers"
 has "$rules" 'DEFAULT_REMOTE_DNS=("1.1.1.1" "8.8.8.8" "9.9.9.9")' \
     "international DNS must use the 3-server overseas pool"
-has "$rules" 'DEFAULT_LOCAL_DNS=("101.226.4.6" "218.30.118.6" "180.76.76.76" "119.29.29.29")' \
+has "$rules" 'DEFAULT_LOCAL_DNS=("223.5.5.5" "119.29.29.29")' \
     "domestic DNS must use the 4-server China race pool"
 has "$rules" 'next((item for item in fallbacks if item != items[0])' \
     "a single configured resolver must still get an independent fallback"

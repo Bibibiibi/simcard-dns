@@ -15,7 +15,7 @@ POLICY_MAP_FILE="${PGW_POLICY_MAP:-/etc/simcard-dns/policy-map.conf}"
 MOSDNS_TEMPLATE="${BASE_DIR}/config.yaml.template"
 MOSDNS_CONF="${BASE_DIR}/config.yaml"
 DEFAULT_REMOTE_DNS=("1.1.1.1" "8.8.8.8" "9.9.9.9")
-DEFAULT_LOCAL_DNS=("101.226.4.6" "218.30.118.6" "180.76.76.76" "119.29.29.29")
+DEFAULT_LOCAL_DNS=("223.5.5.5" "119.29.29.29")
 
 normalize_domain() {
     local domain="${1:-}"
@@ -279,8 +279,8 @@ render_config() {
     [[ "$cache_size" =~ ^[0-9]+$ ]] || cache_size=500000
     remote_primary=$(yaml_upstreams "$remote_dns" "1.1.1.1 8.8.8.8 9.9.9.9" primary udp)
     remote_secondary=$(yaml_upstreams "$remote_dns" "9.9.9.9 1.0.0.1" secondary udp)
-    local_primary=$(yaml_upstreams "$local_dns" "101.226.4.6 218.30.118.6 180.76.76.76 119.29.29.29" all udp)
-    local_secondary=$(yaml_upstreams "$local_dns" "101.226.4.6 218.30.118.6 180.76.76.76 119.29.29.29" all tcp)
+    local_primary=$(yaml_upstreams "$local_dns" "223.5.5.5 119.29.29.29" all udp)
+    local_secondary=$(yaml_upstreams "$local_dns" "223.5.5.5 119.29.29.29" all tcp)
 
     python3 - "$MOSDNS_TEMPLATE" "$MOSDNS_CONF.tmp" "$server_ip" "$cache_size" \
         "$remote_primary" "$remote_secondary" "$local_primary" "$local_secondary" "$client_cidrs" <<'PY'

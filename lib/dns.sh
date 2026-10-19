@@ -155,7 +155,7 @@ configure_dns_upstreams() {
         read -r -p "国际 DNS remote [1.1.1.1,8.8.8.8,9.9.9.9]: " remote_selected
     fi
     if [[ -z "$local_selected" && -t 0 && "${PROMPT_DNS:-0}" == "1" ]]; then
-        read -r -p "国内 DNS local [101.226.4.6,218.30.118.6,180.76.76.76,119.29.29.29]: " local_selected
+        read -r -p "国内 DNS local [223.5.5.5,119.29.29.29]: " local_selected
     fi
     [[ -n "$remote_selected" ]] || remote_selected="${DEFAULT_REMOTE_DNS[*]}"
     [[ -n "$local_selected" ]] || local_selected="${DEFAULT_LOCAL_DNS[*]}"
