@@ -22,7 +22,9 @@ def alive(pid):
     try:
         with open("/proc/%d/stat" % pid, encoding="utf-8") as handle:
             return handle.read().rsplit(")", 1)[1].split()[0] != "Z"
-    except (OSError, IndexError):
+    except OSError:
+        return False  # reaped between the two checks: gone
+    except IndexError:
         return True
 
 
