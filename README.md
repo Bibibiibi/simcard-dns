@@ -173,6 +173,7 @@ sudo simcard-dns --set-dot-domain dns.example.com    # 換成自己的網域（A
 sudo simcard-dns --renew-cert                        # 立即續期憑證
 sudo simcard-dns --setup-cloudflare                  # 接上 Cloudflare（權杖輸入時不顯示）
 sudo simcard-dns --reset-domain                      # 換成新的隨機網域；這台伺服器以前的 DoT 網域記錄會一併刪除
+sudo simcard-dns --check-dot-record                  # 檢查目前網域在 Cloudflare 上有沒有解析，沒有就補建（每 15 分鐘自動跑）
 sudo simcard-dns -ios                                # 重新產生 iOS 描述檔與 QR Code
 ```
 

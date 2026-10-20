@@ -1035,6 +1035,37 @@ def system_metrics():
     return "\n".join(out)
 
 
+DOT_CHECK_STATUS = os.environ.get("PGW_DOT_CHECK_STATUS", "/var/lib/simcard-dns/dot-record.status")
+
+
+def dot_record_line(now=None, path=None):
+    """Status-card line for the DoT DNS record check, or "" when not applicable."""
+    info = {}
+    for line in _read_file(path or DOT_CHECK_STATUS).splitlines():
+        key, sep, value = line.partition("=")
+        if sep:
+            info[key] = value
+    state = info.get("state")
+    if state not in ("ok", "missing", "error"):
+        return ""
+    now = time.time() if now is None else now
+    checked = int(info["checked"]) if info.get("checked", "").isdigit() else 0
+    when = time.strftime("%H:%M", time.localtime(checked)) if checked else "?"
+    if state == "ok":
+        text = "🔎 解析：正常（%s 检查）" % when
+        recreated = int(info["recreated_at"]) if info.get("recreated_at", "").isdigit() else 0
+        if recreated and now - recreated < 86400:
+            text += "\n⚠️ %s 发现 Cloudflare 上的解析记录不见了，已自动补建" % time.strftime(
+                "%m-%d %H:%M", time.localtime(recreated))
+    elif state == "missing":
+        text = "❌ 解析：Cloudflare 上没有这个域名的记录，自动补建失败（%s）" % when
+    else:
+        text = "⚠️ 解析：无法连上 Cloudflare 检查（%s）" % when
+    if checked and now - checked > 3600:
+        text += "\n⚠️ 解析检查已超过 1 小时没有运行"
+    return text
+
+
 def op_status():
     """A compact, human-readable status card (no raw shell output)."""
     lines = ["<b>📊 Proxy Gateway 状态</b>", ""]
@@ -1056,6 +1087,9 @@ def op_status():
     domain = _read_file("/etc/mosdns/.domain") or _read_file("/opt/simcard-dns/etc/.domain")
     if domain:
         lines.append("🔗 域名：<code>%s</code>" % html.escape(domain))
+        record = dot_record_line()
+        if record:
+            lines.append(html.escape(record))
 
     cs = _read_file("/etc/mosdns/.cache_size")
     if cs.isdigit():

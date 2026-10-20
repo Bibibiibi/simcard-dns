@@ -664,3 +664,76 @@ reset_dot_domain() {
     ok "DoT domain reset: ${new}"
     printf 'NEW_DOMAIN=%s\n' "$new"
 }
+
+# ---- DoT record self-check -----------------------------------------------------
+# simcard-dns-dot-check.timer runs this every 15 minutes: the current DoT name
+# must have an A record on Cloudflare pointing at this server, and a missing
+# one is recreated. The result is kept for the bot's status card.
+DOT_CHECK_STATUS="${PGW_DOT_CHECK_STATUS:-/var/lib/simcard-dns/dot-record.status}"
+dot_check_write() { # state domain [recreated_at]
+    local tmp prev_recreated
+    prev_recreated="$(sed -n 's/^recreated_at=//p' "$DOT_CHECK_STATUS" 2>/dev/null | head -n1)"
+    mkdir -p "$(dirname "$DOT_CHECK_STATUS")" || return 1
+    tmp="$(mktemp "${DOT_CHECK_STATUS}.XXXXXX")" || return 1
+    printf 'state=%s\nchecked=%s\ndomain=%s\nrecreated_at=%s\n' "$1" "$(date +%s)" "$2" "${3:-$prev_recreated}" > "$tmp" \
+        && chmod 644 "$tmp" && mv -f "$tmp" "$DOT_CHECK_STATUS"
+}
+check_dot_record() {
+    routing_lock
+    local domain zone ip found
+    domain="$(cat "${CONF_DIR}/.domain" 2>/dev/null || true)"
+    zone="$(cf_conf zone)"
+    if ! cf_configured || [[ -z "$domain" || "$domain" != *".${CF_DOT_LABEL}.${zone}" ]]; then
+        dot_check_write not-cloudflare "$domain"
+        info "DoT domain is not managed through Cloudflare; nothing to check"
+        return 0
+    fi
+    ip="$(cat "${MOSDNS_DIR}/.public_ip" 2>/dev/null || true)"
+    [[ -n "$ip" ]] || { get_public_ip; ip="$PUBLIC_IP"; }
+    if ! found="$(cf_api GET "/zones/$(cf_conf zone_id)/dns_records?type=A&name=${domain}" \
+            | cf_json "[x['id'] for x in r if x.get('content') == '${ip}']")"; then
+        dot_check_write error "$domain"
+        err "Could not read the DNS records of ${domain} from Cloudflare"
+        return 1
+    fi
+    if [[ -n "$found" ]]; then
+        dot_check_write ok "$domain"
+        ok "${domain} -> ${ip} is on Cloudflare"
+        return 0
+    fi
+    if cf_create_a_record "$domain" "$ip" >/dev/null; then
+        dot_check_write ok "$domain" "$(date +%s)"
+        warn "The A record of ${domain} was missing on Cloudflare; recreated it -> ${ip}"
+        return 0
+    fi
+    dot_check_write missing "$domain"
+    err "The A record of ${domain} is missing on Cloudflare and could not be recreated"
+    return 1
+}
+install_dot_check_timer() {
+    local unit_dir="${PGW_DOT_CHECK_UNIT_DIR:-/etc/systemd/system}"
+    mkdir -p "$unit_dir" || return 1
+    cat > "${unit_dir}/simcard-dns-dot-check.service" <<EOF
+[Unit]
+Description=simcard-dns DoT DNS record check (recreate a missing Cloudflare A record)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=${BASE_DIR}/bin/simcard-dns --check-dot-record
+EOF
+    cat > "${unit_dir}/simcard-dns-dot-check.timer" <<'EOF'
+[Unit]
+Description=Check the DoT DNS record every 15 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=15min
+
+[Install]
+WantedBy=timers.target
+EOF
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    systemctl enable --now simcard-dns-dot-check.timer >/dev/null 2>&1 || true
+}

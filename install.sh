@@ -338,6 +338,9 @@ Options:
   --set-firewall managed
                  Let simcard-dns own the INPUT firewall (nftables): TCP 80/443
                  and UDP 443 only for the client networks; SSH, 853, 8111 open.
+  --check-dot-record
+                 Make sure the current DoT name has its A record on Cloudflare
+                 (recreated when missing). Runs every 15 minutes by timer.
   --geo-allow on|off|update|status
                  Regional allowlist (managed nftables firewall only): accept
                  new SSH/853/8111 connections only from HK/MO/TW address space
@@ -672,6 +675,8 @@ upgrade_code() (
     # it before the units restart below, so the restart runs the new one.
     upgrade_stage=exit-helper
     install_apply_exit_helper
+    upgrade_stage=dot-check
+    install_dot_check_timer
     # Regional allowlist: re-render offline with the current generator.
     if [[ -f "$GEO_NFT" ]]; then
         upgrade_stage=geo-allow
@@ -825,6 +830,10 @@ case "${1:-}" in
     --set-firewall)
         check_root
         set_firewall_mode "${2:-}"
+        ;;
+    --check-dot-record)
+        check_root
+        check_dot_record
         ;;
     --geo-allow)
         check_root

@@ -816,6 +816,7 @@ ExecStart=/usr/local/bin/update-mosdns-rules.sh
 EOF
     systemctl daemon-reload
     systemctl enable --quiet --now update-mosdns-rules.timer
+    install_dot_check_timer
     install_certbot_firewall_hooks
     systemctl enable --now certbot.timer 2>/dev/null || true
     ok "Schedules configured (rules: weekly, cert: auto)"
