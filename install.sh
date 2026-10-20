@@ -675,8 +675,6 @@ upgrade_code() (
     # it before the units restart below, so the restart runs the new one.
     upgrade_stage=exit-helper
     install_apply_exit_helper
-    upgrade_stage=dot-check
-    install_dot_check_timer
     # Regional allowlist: re-render offline with the current generator.
     if [[ -f "$GEO_NFT" ]]; then
         upgrade_stage=geo-allow
@@ -737,6 +735,9 @@ EOF
     committed=1
     trap - EXIT HUP INT TERM
     rm -rf "$txn"
+    # New timers only after a successful upgrade: a rollback must leave the
+    # unit directory exactly as it was.
+    install_dot_check_timer || true
 )
 
 main_upgrade() {
