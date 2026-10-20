@@ -76,6 +76,25 @@ get_public_ip() { PUBLIC_IP=192.0.2.10; }
 echo 192.0.2.10 > "${MOSDNS_DIR}/.public_ip"
 state_of() { sed -n "s/^$1=//p" "$DOT_CHECK_STATUS"; }
 
+# The real command runs under `set -euo pipefail` (install.sh) and the first run
+# has no status file yet; it must not stop silently.
+# A separate bash process: errexit inside `( ... ) || fail` would be ignored.
+echo abc.dns.example.org > "${CONF_DIR}/.domain"
+{
+    echo 'set -euo pipefail'
+    echo 'info() { :; }; warn() { :; }; ok() { :; }; err() { echo "$*" >&2; }; routing_lock() { :; }'
+    for fn in cf_conf cf_configured dot_check_write check_dot_record; do
+        awk "/^${fn}\\(\\)/,/^}/" "${root}/lib/cert.sh"
+    done
+    printf 'CONF_DIR=%q; CF_CONF=%q; CF_CREDENTIALS=%q; CF_DOT_LABEL=dns; DOT_CHECK_STATUS=%q\n' \
+        "$CONF_DIR" "${tmp}/none.conf" "${tmp}/none.ini" "$DOT_CHECK_STATUS"
+    echo 'check_dot_record'
+    echo 'echo reached-end'
+} > "${tmp}/first-run.sh"
+set +e; first_run="$(bash "${tmp}/first-run.sh" 2>&1)"; set -e
+[[ "$first_run" == *reached-end* ]] || fail "the first run (no status file yet) must work under set -euo pipefail: $first_run"
+rm -f "$DOT_CHECK_STATUS"
+
 # Not on Cloudflare: nothing to check.
 echo dns.example.org > "${CONF_DIR}/.domain"
 check_dot_record || fail "an own-domain install must not fail the check"

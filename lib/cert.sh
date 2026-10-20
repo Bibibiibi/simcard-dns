@@ -372,8 +372,8 @@ print(json.dumps(data.get("result")))
 PY
 }
 
-cf_conf() { # key -> value from CF_CONF
-    sed -n "s/^${1}=//p" "$CF_CONF" 2>/dev/null | head -n1
+cf_conf() { # key -> value from CF_CONF ("" when not connected; safe under set -e)
+    { sed -n "s/^${1}=//p" "$CF_CONF" 2>/dev/null || true; } | head -n1
 }
 
 cf_configured() {
@@ -672,7 +672,8 @@ reset_dot_domain() {
 DOT_CHECK_STATUS="${PGW_DOT_CHECK_STATUS:-/var/lib/simcard-dns/dot-record.status}"
 dot_check_write() { # state domain [recreated_at]
     local tmp prev_recreated
-    prev_recreated="$(sed -n 's/^recreated_at=//p' "$DOT_CHECK_STATUS" 2>/dev/null | head -n1)"
+    # No status file yet on the first run: sed fails, which set -e must not see.
+    prev_recreated="$(sed -n 's/^recreated_at=//p' "$DOT_CHECK_STATUS" 2>/dev/null | head -n1 || true)"
     mkdir -p "$(dirname "$DOT_CHECK_STATUS")" || return 1
     tmp="$(mktemp "${DOT_CHECK_STATUS}.XXXXXX")" || return 1
     printf 'state=%s\nchecked=%s\ndomain=%s\nrecreated_at=%s\n' "$1" "$(date +%s)" "$2" "${3:-$prev_recreated}" > "$tmp" \
