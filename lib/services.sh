@@ -461,7 +461,8 @@ generate_ios_profile() {
     info "Generating iOS DoT configuration profile..."
     mkdir -p "$WWW_DIR"
     local profile_path="${WWW_DIR}/ios-dot.mobileconfig"
-    local profile_url="http://${DOMAIN}:${IOS_PROFILE_PORT}/ios-dot.mobileconfig"
+    # HTTPS with the DoT certificate (ios-http.py redirects plain HTTP there).
+    local profile_url="https://${DOMAIN}:${IOS_PROFILE_PORT}/ios-dot.mobileconfig"
     cat > "$profile_path" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -558,7 +559,7 @@ EOF
     rm -f /etc/systemd/system/simcard-dns-ios-profile.service
     cat > /etc/systemd/system/simcard-dns-ios-profile.socket <<EOF
 [Unit]
-Description=Proxy Gateway iOS profile HTTP socket
+Description=Proxy Gateway iOS profile HTTPS socket
 
 [Socket]
 ListenStream=0.0.0.0:${IOS_PROFILE_PORT}

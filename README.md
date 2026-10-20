@@ -109,7 +109,7 @@ sudo simcard-dns --set-firewall managed
 ### 5. 手機設定
 
 - **Android**：設定 → 網路和網際網路 → 私人 DNS → 填入安裝時的網域。
-- **iOS / iPadOS**：掃安裝完成時顯示的 QR Code，或用 Safari 開 `http://<你的網域>:8111/ios-dot.mobileconfig` 安裝描述檔（只在行動網路啟用 DoT）。要重新產生描述檔和 QR Code，執行 `sudo simcard-dns -ios`（原始碼目錄可用 `./install.sh -ios`）。從舊版升級後描述檔識別碼已改變，請先刪除舊的描述檔再重新安裝。
+- **iOS / iPadOS**：掃安裝完成時顯示的 QR Code，或用 Safari 開 `https://<你的網域>:8111/ios-dot.mobileconfig` 安裝描述檔（用 DoT 憑證加密，舊的 http 網址會自動轉到 https）（只在行動網路啟用 DoT）。要重新產生描述檔和 QR Code，執行 `sudo simcard-dns -ios`（原始碼目錄可用 `./install.sh -ios`）。從舊版升級後描述檔識別碼已改變，請先刪除舊的描述檔再重新安裝。
 - **電腦**：在系統的 DoT 設定，或用 Stubby、cloudflared 指向 `<你的網域>:853`。
 
 改完規則後如果手機沒有馬上生效，先切一下飛航模式或強制關閉 App：手機和 App 會快取 DNS、保留舊連線。

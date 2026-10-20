@@ -1871,7 +1871,7 @@ def op_ios_send(chat_id):
     """Send the iOS profile QR as an image (with the URL as caption)."""
     domain = _read_file("/etc/mosdns/.domain") or _read_file("/opt/simcard-dns/etc/.domain")
     if domain:
-        url = "http://%s:8111/ios-dot.mobileconfig" % domain
+        url = "https://%s:8111/ios-dot.mobileconfig" % domain
     else:
         url = _read_file(os.path.join(WWW_DIR, "ios-profile-url.txt"))
     if not url:
@@ -1900,7 +1900,7 @@ def op_ios_send_inline(cb, generation=None):
     if generation is None:
         generation = _chat_generation(chat_id)
     domain = _read_file("/etc/mosdns/.domain") or _read_file("/opt/simcard-dns/etc/.domain")
-    url = ("http://%s:8111/ios-dot.mobileconfig" % domain if domain else
+    url = ("https://%s:8111/ios-dot.mobileconfig" % domain if domain else
            _read_file(os.path.join(WWW_DIR, "ios-profile-url.txt")))
     if not url:
         return "未找到 iOS 描述文件地址，先在服务器上用 -ios 生成。"

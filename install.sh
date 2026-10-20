@@ -550,7 +550,7 @@ main_install() {
     printf '\n%b✓ 安装完成%b\n' "$GREEN" "$NC"
     cat <<EOF
   DNS:  ${DOMAIN}
-  iOS:  http://${DOMAIN}:${IOS_PROFILE_PORT}/ios-dot.mobileconfig
+  iOS:  https://${DOMAIN}:${IOS_PROFILE_PORT}/ios-dot.mobileconfig
   管理: ${BASE_DIR}/bin/simcard-dns --status
 EOF
     if [[ -z "$(current_client_cidrs 2>/dev/null)" ]]; then

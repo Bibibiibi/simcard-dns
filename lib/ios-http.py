@@ -1,16 +1,27 @@
 #!/usr/bin/env python3
 """
-Tiny inetd-style HTTP responder for the iOS DoT profile.
+Tiny inetd-style responder for the iOS DoT profile.
 
 Invoked once per connection by systemd socket activation (Accept=yes), with the
 client socket wired to stdin/stdout. Serves a couple of static files from
 WWW_DIR. Zero processes when idle.
+
+HTTPS: the DoT certificate (the *.dns.<zone> wildcard, or the own-domain
+certificate) also covers the profile URL, so a TLS ClientHello is answered with
+TLS. The profile names the DoT domain and points the phone at this resolver, so
+plain HTTP would leak the name and let anyone on the path swap the profile:
+a plain request is redirected to https://<same host>/<same path> instead. Only
+when no certificate exists yet is the profile served over plain HTTP.
 """
 import os
 import signal
+import socket
+import ssl
 import sys
 
 WWW_DIR = os.environ.get("WWW_DIR", "/opt/simcard-dns/www")
+TLS_CERT = os.environ.get("IOS_TLS_CERT", "/etc/mosdns/certs/fullchain.pem")
+TLS_KEY = os.environ.get("IOS_TLS_KEY", "/etc/mosdns/certs/privkey.pem")
 
 ROUTES = {
     "/ios-dot.mobileconfig": ("ios-dot.mobileconfig", "application/x-apple-aspen-config"),
@@ -19,17 +30,70 @@ ROUTES = {
 }
 
 
-def write(out, status, ctype, body):
+def write(out, status, ctype, body, extra=""):
     head = (
         "HTTP/1.1 %s\r\n"
         "Content-Type: %s\r\n"
         "Content-Length: %d\r\n"
+        "%s"
         "Connection: close\r\n"
-        "\r\n" % (status, ctype, len(body))
+        "\r\n" % (status, ctype, len(body), extra)
     ).encode("ascii")
     out.write(head)
     out.write(body)
     out.flush()
+
+
+def read_request(inp):
+    """(method, path, host) from the request line and headers."""
+    line = inp.readline(8192).decode("latin1", "replace")
+    host = ""
+    for _ in range(64):
+        header = inp.readline(8192).decode("latin1", "replace")
+        if header in ("\r\n", "\n", ""):
+            break
+        name, _, value = header.partition(":")
+        if name.strip().lower() == "host":
+            host = value.strip()
+    parts = line.split()
+    if len(parts) < 2:
+        return "", "", host
+    return parts[0], parts[1].split("?", 1)[0], host
+
+
+def serve(inp, out, tls, tls_available):
+    method, path, host = read_request(inp)
+    if method != "GET":
+        write(out, "400 Bad Request", "text/plain", b"bad request\n")
+        return
+    route = ROUTES.get(path)
+    if not route:
+        write(out, "404 Not Found", "text/plain", b"not found\n")
+        return
+    if not tls and tls_available and host and all(c.isalnum() or c in ".-:[]" for c in host):
+        location = "https://%s%s" % (host, path)
+        write(out, "301 Moved Permanently", "text/plain", b"use https\n", "Location: %s\r\n" % location)
+        return
+    filename, ctype = route
+    try:
+        with open(os.path.join(WWW_DIR, filename), "rb") as f:
+            body = f.read()
+    except OSError:
+        write(out, "404 Not Found", "text/plain", b"not found\n")
+        return
+    write(out, "200 OK", ctype, body)
+
+
+def tls_context():
+    if not (os.path.isfile(TLS_CERT) and os.path.isfile(TLS_KEY)):
+        return None
+    try:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        ctx.load_cert_chain(TLS_CERT, TLS_KEY)
+        return ctx
+    except (OSError, ssl.SSLError):
+        return None
 
 
 def main():
@@ -37,30 +101,17 @@ def main():
     signal.signal(signal.SIGALRM, lambda *_: sys.exit(0))
     signal.alarm(10)
 
-    inp = sys.stdin.buffer
-    out = sys.stdout.buffer
-
-    line = inp.readline(8192).decode("latin1", "replace")
-    parts = line.split()
-    if len(parts) < 2 or parts[0] != "GET":
-        write(out, "400 Bad Request", "text/plain", b"bad request\n")
+    ctx = tls_context()
+    conn = socket.socket(fileno=os.dup(sys.stdin.fileno()))
+    first = conn.recv(1, socket.MSG_PEEK)
+    if first == b"\x16" and ctx is not None:  # TLS handshake record
+        tls = ctx.wrap_socket(conn, server_side=True)
+        stream = tls.makefile("rwb")
+        serve(stream, stream, True, True)
+        stream.close()
+        tls.close()
         return
-    path = parts[1].split("?", 1)[0]
-
-    route = ROUTES.get(path)
-    if not route:
-        write(out, "404 Not Found", "text/plain", b"not found\n")
-        return
-
-    filename, ctype = route
-    full = os.path.join(WWW_DIR, filename)
-    try:
-        with open(full, "rb") as f:
-            body = f.read()
-    except OSError:
-        write(out, "404 Not Found", "text/plain", b"not found\n")
-        return
-    write(out, "200 OK", ctype, body)
+    serve(sys.stdin.buffer, sys.stdout.buffer, False, ctx is not None)
 
 
 if __name__ == "__main__":
