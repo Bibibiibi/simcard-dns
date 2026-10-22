@@ -36,12 +36,13 @@ curl -fsSL https://raw.githubusercontent.com/Bibibiibi/simcard-dns/main/install.
 ```bash
 sudo simcard-dns --lookup-client-asn AS9231   # 先看業者名稱與網段數
 sudo simcard-dns --add-client-asn AS9231
+sudo simcard-dns --set-client-cidrs "203.0.113.0/24"   # 或直接指定網段（取代整份清單）
 ```
 
 **3. 手機設定**
 
 - **Android**：設定 → 網路和網際網路 → 私人 DNS → 填入 DoT 網域。
-- **iOS / iPadOS**：掃安裝完成時的 QR Code，或用 Safari 開 `https://<DoT 網域>:8111/ios-dot.mobileconfig`。
+- **iOS / iPadOS**：掃安裝完成時的 QR Code，或用 Safari 開 `https://<DoT 網域>:8111/ios-dot.mobileconfig`。要重新產生描述檔與 QR Code，執行 `sudo simcard-dns -ios`（原始碼目錄可用 `./install.sh -ios`）。
 - **電腦**：系統的 DoT 設定或 Stubby、cloudflared 指向 `<DoT 網域>:853`。
 
 改完規則後手機沒有馬上生效，先切一下飛航模式或強制關閉 App（手機會快取 DNS、保留舊連線）。
