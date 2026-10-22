@@ -231,6 +231,80 @@ def answer_callback_async(cb_id):
     _CALLBACK_EXECUTOR.submit(go)
 
 
+# Telegram rejects HTML that is cut in the middle of a tag or entity, or that
+# leaves a tag open ("can't parse entities"). Views build arbitrarily long
+# messages (rule lists, allowlists, connected clients), so every outgoing
+# text is fitted or split with the tag stack kept balanced instead of being
+# sliced at a character count.
+TG_TEXT_LIMIT = 4096
+TG_CHUNK_SIZE = 3900
+_HTML_TAG_RE = re.compile(r"<(/?)([A-Za-z][A-Za-z0-9-]*)(?:\s[^<>]*)?>")
+_TRUNCATED_MARK = "\n… (已截断)"
+
+
+def _html_open_tags(fragment, stack=None):
+    """Return the tag stack left open after `fragment` (list of (name, open_tag))."""
+    stack = list(stack or [])
+    for m in _HTML_TAG_RE.finditer(fragment):
+        closing, name = m.group(1), m.group(2).lower()
+        if closing:
+            for i in range(len(stack) - 1, -1, -1):
+                if stack[i][0] == name:
+                    del stack[i:]
+                    break
+        else:
+            stack.append((name, m.group(0)))
+    return stack
+
+
+def _html_clean_cut(fragment):
+    """Drop a trailing partial tag or entity left by a character cut."""
+    lt = fragment.rfind("<")
+    if lt > fragment.rfind(">"):
+        fragment = fragment[:lt]
+    amp = fragment.rfind("&")
+    if amp > fragment.rfind(";") and len(fragment) - amp <= 10:
+        fragment = fragment[:amp]
+    return fragment
+
+
+def _html_closers(stack):
+    return "".join("</%s>" % name for name, _ in reversed(stack))
+
+
+def fit_html(text, limit=TG_TEXT_LIMIT, mark=_TRUNCATED_MARK):
+    """Shorten HTML so it stays under Telegram's limit with balanced tags."""
+    text = text or ""
+    if len(text) <= limit:
+        return text
+    budget = max(limit - len(mark) - 64, 0)  # room for the closing tags
+    cut = _html_clean_cut(text[:budget])
+    return cut + _html_closers(_html_open_tags(cut)) + mark
+
+
+def split_html(text, size=TG_CHUNK_SIZE):
+    """Split HTML into balanced pieces of at most `size` characters."""
+    text = text or ""
+    if len(text) <= size:
+        return [text]
+    pieces, carry, pos = [], [], 0
+    while pos < len(text):
+        prefix = "".join(tag for _, tag in carry)
+        room = max(size - len(prefix) - 64, 1)
+        piece = text[pos : pos + room]
+        if pos + room < len(text):
+            nl = piece.rfind("\n")
+            if nl > room // 2:
+                piece = piece[: nl + 1]
+            cleaned = _html_clean_cut(piece)
+            if cleaned:
+                piece = cleaned
+        pos += len(piece)
+        carry = _html_open_tags(piece, carry)
+        pieces.append(prefix + piece + _html_closers(carry))
+    return pieces
+
+
 def send(chat_id, text, keyboard=None, mono=False):
     # mono=True: paginate raw command output across one or more monospace
     # messages (escaped + wrapped per chunk, so HTML never splits mid-tag).
@@ -240,7 +314,7 @@ def send(chat_id, text, keyboard=None, mono=False):
         chunks = [text[i : i + 3500] for i in range(0, len(text), 3500)] or [""]
         wrapped = ["<pre>" + html.escape(c) + "</pre>" for c in chunks]
     else:
-        wrapped = list(_chunks(text, 3900))
+        wrapped = split_html(text)
     last = len(wrapped) - 1
     last_mid = None
     for i, chunk in enumerate(wrapped):
@@ -283,14 +357,6 @@ def delete_message(chat_id, message_id):
     return False
 
 
-def _chunks(text, size):
-    if not text:
-        yield ""
-        return
-    for i in range(0, len(text), size):
-        yield text[i : i + size]
-
-
 def edit_message(chat_id, message_id, text, keyboard=None, mono=False):
     """editMessageText without a callback_query. Returns True when the message
     now shows the requested content ("message is not modified" counts as
@@ -300,7 +366,7 @@ def edit_message(chat_id, message_id, text, keyboard=None, mono=False):
     if mono:
         text = "<pre>" + html.escape(((text or "").strip() or "(no output)")[:3800]) + "</pre>"
     params = {
-        "chat_id": chat_id, "message_id": message_id, "text": (text or "")[:4096],
+        "chat_id": chat_id, "message_id": message_id, "text": fit_html(text),
         "parse_mode": "HTML", "disable_web_page_preview": True,
     }
     if keyboard is not None:
@@ -394,8 +460,9 @@ def edit(cb, text, keyboard=None, mono=False):
     mid = msg.get("message_id")
     if mono:
         text = "<pre>" + html.escape(((text or "").strip() or "(no output)")[:3800]) + "</pre>"
+    text = fit_html(text)
     params = {
-        "chat_id": chat_id, "message_id": mid, "text": (text or "")[:4096],
+        "chat_id": chat_id, "message_id": mid, "text": text,
         "parse_mode": "HTML", "disable_web_page_preview": True,
     }
     if keyboard is not None:
@@ -407,15 +474,18 @@ def edit(cb, text, keyboard=None, mono=False):
     if "not modified" in str(r):
         CONSOLE[chat_id] = mid
         return  # nothing to do
-    # original may be a photo / too old / gone -> delete it and post a fresh
-    # message so the user doesn't see an orphaned media bubble above the menu.
+    # original may be a photo / too old / gone -> post a fresh message, then
+    # delete the old one so the user doesn't see an orphaned media bubble
+    # above the menu. Send first: if the new message also fails, the old
+    # console must stay so the chat is not left with no menu at all.
     # text is already HTML-formatted when mono=True; pass mono=False so send()
     # does not double-escape it.
+    new_mid = send(chat_id, text, keyboard if keyboard else None, mono=False)
+    if new_mid is None:
+        return
     if mid is not None:
         delete_message(chat_id, mid)
-    new_mid = send(chat_id, text, keyboard if keyboard else None, mono=False)
-    if new_mid is not None:
-        CONSOLE[chat_id] = new_mid
+    CONSOLE[chat_id] = new_mid
 
 
 def _busy_key_from_cb(cb):
@@ -1230,7 +1300,7 @@ def op_add_exit_batch(items):
     try:
         results = []
         with _EXIT_WRITE_LOCK:
-            reserved = set(parse_exit_names())
+            reserved = set(parse_exit_names()) | {"smart"}  # router name stays reserved
             assigned = set()
             for item in items:
                 requested = item["name"]
@@ -1301,7 +1371,7 @@ def unique_exit_name(name):
     base = clean_exit_name(name)
     if not base:
         return ""
-    existing = set(parse_exit_names())
+    existing = set(parse_exit_names()) | {"smart"}  # router name stays reserved
     if base not in existing:
         return base
     for i in range(2, 100):
@@ -1846,19 +1916,30 @@ def op_check_exits():
     return "\n".join(lines)
 
 
+EXITS_DIR_PATH = "/etc/simcard-dns/exits"
+WG_DIR_PATH = "/etc/wireguard"
+
+
 def parse_exit_names():
     names = ["local"]
     seen = set()
     try:
-        for f in sorted(os.listdir("/etc/simcard-dns/exits")):
+        for f in sorted(os.listdir(EXITS_DIR_PATH)):
             if f.endswith(".type"):
+                try:
+                    with open(os.path.join(EXITS_DIR_PATH, f), encoding="utf-8") as handle:
+                        kind = handle.read().strip()
+                except OSError:
+                    kind = ""
+                if kind == "router":
+                    continue  # the smart router is not a selectable exit
                 seen.add(f[: -len(".type")])
     except OSError:
         pass
     try:
-        for f in sorted(os.listdir("/etc/wireguard")):
+        for f in sorted(os.listdir(WG_DIR_PATH)):
             if f.startswith("pgw-") and f.endswith(".conf"):
-                if os.path.islink(os.path.join("/etc/wireguard", f)):
+                if os.path.islink(os.path.join(WG_DIR_PATH, f)):
                     continue  # runtime iface aliases for Unicode names
                 seen.add(f[len("pgw-") : -len(".conf")])
     except OSError:

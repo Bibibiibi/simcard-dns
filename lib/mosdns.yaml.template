@@ -2,12 +2,6 @@ log:
   level: info
 
 plugins:
-  - tag: gfw_domains
-    type: domain_set
-    args:
-      files:
-        - /etc/mosdns/gfwlist.txt
-
   - tag: china_domains
     type: domain_set
     args:
@@ -29,7 +23,7 @@ plugins:
         - /etc/mosdns/rule-block.txt
 
   # Explicit per-domain overrides managed by --proxy-domain. These are
-  # evaluated before ChinaList/GFWList for client networks only.
+  # evaluated before the rule domains and ChinaList for client networks only.
   - tag: override_direct_domains
     type: domain_set
     args:
@@ -160,9 +154,7 @@ __LOCAL_SECONDARY_UPSTREAMS__
   #   domains named by a routing rule -> server IP (proxied, exit per rule);
   #   rule target block -> refused; everything else resolves normally and the
   #   phone connects directly (ChinaList -> local_resolve, other -> overseas).
-  # Other sources:
-  #   GFWList -> normal overseas resolve (no hijack);
-  #   ChinaList -> local_resolve; other -> overseas.
+  # GFWList is not used at all: only routing rules decide what is proxied.
   - tag: reject_aaaa
     type: sequence
     args:

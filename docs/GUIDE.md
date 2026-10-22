@@ -195,7 +195,7 @@ sudo /opt/simcard-dns/bin/simcard-dns --setup-tgbot
 | `/opt/simcard-dns/etc/tgbot.env` | Bot Token 和管理员 ID（权限 600） |
 | `/var/lib/simcard-dns/tgbot-state.json` | tgbot 轮询断点，重启续传（权限 600） |
 | `/etc/mosdns/config.yaml` | mosdns 实际配置 |
-| `/etc/mosdns/gfwlist-extra-local.txt` | 本地补充 GFWList 域名 |
+| `/etc/mosdns/domain-overrides.conf` | `--proxy-domain` 写入的单域名覆盖（`域名=proxy/direct/block`） |
 | `/etc/sniproxy.conf` | sniproxy 配置（resolver 强制 `ipv4_only`） |
 
 ### 端口

@@ -23,16 +23,16 @@ install_deps() {
     case "$PKG_MGR" in
         apt-get)
             export DEBIAN_FRONTEND=noninteractive
+            # Never rewrite the host's apt sources on a failed update: the
+            # old fallback replaced every mirror line with a single trixie
+            # entry (a release switch on Debian 12 and no security suite).
+            # A transient mirror failure is retried once, then reported.
             if ! apt-get -o DPkg::Lock::Timeout="$apt_lock_timeout" update -qq >>"$pkg_log" 2>&1; then
-                warn "apt update failed; trying a direct public DNS path for Debian mirrors..."
-                if [[ -f /etc/apt/sources.list.d/debian.sources ]]; then
-                    sed -i 's/^URIs: .*/URIs: http:\/\/deb.debian.org\/debian/' /etc/apt/sources.list.d/debian.sources 2>/dev/null || true
-                fi
-                if [[ -f /etc/apt/sources.list ]]; then
-                    sed -i 's|^[[:space:]]*deb[[:space:]]\+mirror+file:/etc/apt/mirrors/.*|deb http://deb.debian.org/debian trixie main|g' /etc/apt/sources.list 2>/dev/null || true
-                fi
+                warn "apt update failed; retrying once..."
+                sleep 3
                 if ! apt-get -o DPkg::Lock::Timeout="$apt_lock_timeout" update -qq >>"$pkg_log" 2>&1; then
                     err "apt update failed. Package-manager log: $pkg_log"
+                    err "Check /etc/apt/sources.list (or sources.list.d/*.sources) and the mirror network path, then rerun."
                     grep -Ei '(^E:|^Error:|error|failed)' "$pkg_log" | tail -n 8 | sed 's/^/  /' >&2 || true
                     return 1
                 fi
@@ -417,7 +417,7 @@ install_mosdns() {
     echo "$REMOTE_DNS" > /etc/mosdns/.overseas_public_dns
     echo "$REMOTE_DNS" > /etc/mosdns/.sniproxy_dns
     echo "${PACKET_CACHE_SIZE:-500000}" > /etc/mosdns/.cache_size
-    touch /etc/mosdns/gfwlist.txt /etc/mosdns/chinalist.txt /etc/mosdns/gfwlist-extra-local.txt
+    touch /etc/mosdns/chinalist.txt /etc/mosdns/gfwlist-extra-local.txt
     chown -R mosdns:mosdns /etc/mosdns
     chmod 0750 /etc/mosdns /etc/mosdns/certs
     cat > /etc/systemd/system/mosdns.service <<'EOF'

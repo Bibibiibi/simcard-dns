@@ -85,6 +85,14 @@ def wg_to_proxy(name, path):
     return proxy
 
 
+def exit_kind(name):
+    try:
+        with open(os.path.join(EXITS_DIR, name + ".type"), encoding="utf-8") as handle:
+            return handle.read().strip()
+    except OSError:
+        return ""
+
+
 def build_exit_proxy(name):
     config_path = os.path.join(EXITS_DIR, name + ".yaml")
     if os.path.exists(config_path):
@@ -186,6 +194,8 @@ def main():
         if not (os.path.exists(os.path.join(EXITS_DIR, resolved + ".yaml")) or
                 os.path.exists(os.path.join(WG_DIR, "pgw-%s.conf" % resolved))):
             die("policy '%s' references unknown exit or category '%s'" % (raw, resolved))
+        if exit_kind(resolved) == "router":
+            die("policy '%s' maps to '%s', which is the smart router itself, not an exit" % (raw, resolved))
         if resolved not in proxy_names:
             proxies.append(build_exit_proxy(resolved))
             proxy_names.add(resolved)

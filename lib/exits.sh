@@ -77,6 +77,19 @@ list_exit_names() {
     return 0
 }
 
+# Exits a rule category may be mapped to: everything list_exit_names knows
+# except the smart router itself (type "router"), which is an entry in the
+# exit list for --set-exit but never a target for a policy.
+list_routable_exit_names() {
+    local n
+    while IFS= read -r n; do
+        [[ -z "$n" ]] && continue
+        [[ "$(exit_type "$n")" == router ]] && continue
+        printf '%s\n' "$n"
+    done < <(list_exit_names)
+    return 0
+}
+
 ensure_mihomo() {
     [[ -x "${MIHOMO_BIN}" ]] && return 0
     info "Installing locked mihomo ${MIHOMO_VERSION_DEFAULT} (TUN engine for URI exits)..."
@@ -472,9 +485,9 @@ list_exits() {
         t="$(exit_type "$n")"
         case "$t" in
             wireguard)
-                detail="$(grep -i '^[[:space:]]*Endpoint' "$(exit_conf_path "$n")" 2>/dev/null | head -n1 | sed 's/.*=[[:space:]]*//')" ;;
+                detail="$(grep -i '^[[:space:]]*Endpoint' "$(exit_conf_path "$n")" 2>/dev/null | head -n1 | sed 's/.*=[[:space:]]*//' || true)" ;;
             shadowsocks|vmess|trojan|vless|hysteria|hysteria2|tuic|anytls|shadowtls|socks|http)
-                detail="$(grep -oE '"server": *"[^"]+"|"port": *[0-9]+' "$(exit_mihomo_conf "$n")" 2>/dev/null | head -n2 | sed 's/.*: *//; s/"//g' | paste -sd: -)" ;;
+                detail="$(grep -oE '"server": *"[^"]+"|"port": *[0-9]+' "$(exit_mihomo_conf "$n")" 2>/dev/null | head -n2 | sed 's/.*: *//; s/"//g' | paste -sd: - || true)" ;;
             router)
                 detail="rules:$(grep -cvE '^[[:space:]]*(#|;|$)' "${RULES_FILE}" 2>/dev/null || echo 0)" ;;
             *) detail="?" ;;
@@ -511,7 +524,9 @@ PYNAME
         cat > "$tmp"
     fi
     local uri type px_user px_pass px_rdns
-    uri="$(grep -iE '^[[:space:]]*(ss|vmess|trojan|vless|hysteria2|hy2|tuic|anytls|socks5h|socks5|socks|http|https)://' "$tmp" | head -n1 | tr -d '\r' | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+    # A WireGuard config has no URI line, so grep exits 1: under pipefail
+    # that must not abort the whole command (the [Interface] branch below).
+    uri="$(grep -iE '^[[:space:]]*(ss|vmess|trojan|vless|hysteria2|hy2|tuic|anytls|socks5h|socks5|socks|http|https)://' "$tmp" | head -n1 | tr -d '\r' | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' || true)"
     if [[ -n "$uri" ]]; then
         local uri_lc; uri_lc="$(printf '%s' "$uri" | tr '[:upper:]' '[:lower:]')"
         case "$uri_lc" in

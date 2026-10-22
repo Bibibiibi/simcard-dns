@@ -2,13 +2,9 @@
 set -euo pipefail
 
 BASE_DIR="${PGW_MOSDNS_DIR:-/etc/mosdns}"
-GFWLIST_URL="https://github.com/gfwlist/gfwlist/raw/master/gfwlist.txt"
 CHINALIST_URL="https://github.com/felixonmars/dnsmasq-china-list/raw/master/accelerated-domains.china.conf"
-GFWLIST_RAW="${BASE_DIR}/gfwlist.raw"
 CHINALIST_RAW="${BASE_DIR}/chinalist.raw"
-GFWLIST_FILE="${BASE_DIR}/gfwlist.txt"
 CHINALIST_FILE="${BASE_DIR}/chinalist.txt"
-GFWLIST_EXTRA_FILE="${BASE_DIR}/gfwlist-extra-local.txt"
 DEFAULT_RULES_FILE="${PGW_DEFAULT_RULES_FILE:-/etc/simcard-dns/rules-default.conf}"
 USER_RULES_FILE="${PGW_RULES_FILE:-/etc/simcard-dns/rules.conf}"
 POLICY_MAP_FILE="${PGW_POLICY_MAP:-/etc/simcard-dns/policy-map.conf}"
@@ -37,20 +33,6 @@ valid_domain() {
 # overrides and local extras; only the upstream ChinaList cache gets this form.
 valid_chinalist_domain() {
     [[ "${1:-}" =~ ^[A-Za-z0-9]([A-Za-z0-9_-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9_-]*[A-Za-z0-9])?)*$ ]]
-}
-
-append_local_gfwlist_extras() {
-    [[ -f "$GFWLIST_EXTRA_FILE" ]] || return 0
-    local domain
-    while IFS= read -r domain || [[ -n "$domain" ]]; do
-        domain=$(normalize_domain "$domain")
-        [[ -z "$domain" ]] && continue
-        if valid_domain "$domain"; then
-            printf '%s\n' "$domain"
-        else
-            echo "[!] Skipping invalid local GFWList extra domain: $domain" >&2
-        fi
-    done < "$GFWLIST_EXTRA_FILE" >> "$GFWLIST_FILE"
 }
 
 # Routing rules decide what reaches the gateway at all: only domains named by
@@ -116,10 +98,15 @@ def parse_list(text):
     return found
 
 def fetch(url):
-    """Remote list text: refreshed unless --render-only, falling back to cache."""
+    """Remote list text. The scheduled update (no mode) refreshes every list;
+    --offline (rule edits, allowlist changes, every rollback path, all while
+    holding the routing lock) only downloads a list that has no cache yet, so
+    an unreachable GitHub cannot stall them; --render-only never touches the
+    network."""
     os.makedirs(cache_dir, exist_ok=True)
     path = os.path.join(cache_dir, hashlib.sha256(url.encode()).hexdigest()[:24] + ".txt")
-    if mode != "--render-only":
+    refresh = mode == "" or (mode == "--offline" and not os.path.exists(path))
+    if refresh:
         try:
             with urllib.request.urlopen(url, timeout=15) as resp:
                 text = resp.read().decode("utf-8", "ignore")
@@ -182,41 +169,6 @@ for key, out in (("proxy", out_proxy), ("block", out_block)):
         handle.write("".join(x + "\n" for x in sorted(result[key])))
 print("[OK] Routing-rule domains for DNS: %d proxied, %d blocked" % (len(result["proxy"]), len(result["block"])))
 PY
-}
-
-parse_gfwlist() {
-    local decoded
-    decoded=$(mktemp "${BASE_DIR}/gfwlist.decoded.XXXXXX")
-    if ! base64 -d "$GFWLIST_RAW" > "$decoded" 2>/dev/null; then
-        base64 -d -i "$GFWLIST_RAW" > "$decoded" 2>/dev/null || true
-    fi
-    python3 - "$decoded" > "$GFWLIST_FILE" <<'PY'
-import re
-import sys
-from urllib.parse import urlsplit
-
-domain_re = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9_-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9_-]*[A-Za-z0-9])?)+$")
-domains = set()
-with open(sys.argv[1], encoding="utf-8", errors="ignore") as source:
-    for raw in source:
-        line = raw.strip()
-        if not line or line[0] in "!@[":
-            continue
-        if line.startswith("||"):
-            domain = line[2:].split("^", 1)[0].split("/", 1)[0]
-        elif line.startswith("|http://") or line.startswith("|https://"):
-            domain = urlsplit(line[1:]).hostname or ""
-        elif line.startswith("*."):
-            domain = line[2:].split("/", 1)[0]
-        else:
-            domain = line.split("/", 1)[0].split("^", 1)[0]
-        domain = domain.lstrip(".").removeprefix("www.").rstrip(".")
-        if domain_re.match(domain):
-            domains.add(domain)
-for domain in sorted(domains):
-    print(domain)
-PY
-    rm -f "$decoded"
 }
 
 parse_chinalist() {
@@ -389,7 +341,7 @@ mkdir -p "$BASE_DIR"
 live="$BASE_DIR"
 stage="$(mktemp -d "$live/.rules-stage.XXXXXX")"
 backup="$(mktemp -d "$live/.rules-backup.XXXXXX")"
-files=(gfwlist.txt chinalist.txt gfwlist.raw chinalist.raw override-direct.txt override-proxy.txt override-block.txt rule-domains.txt rule-block.txt config.yaml)
+files=(chinalist.txt chinalist.raw override-direct.txt override-proxy.txt override-block.txt rule-domains.txt rule-block.txt config.yaml)
 was_active=0
 systemctl is-active --quiet mosdns && was_active=1
 published=0
@@ -417,25 +369,22 @@ trap 'exit 143' TERM HUP
 for file in "${files[@]}"; do
     [[ ! -e "$live/$file" ]] || { cp -a "$live/$file" "$backup/$file"; cp -a "$live/$file" "$stage/$file"; }
 done
-for file in .remote_dns .local_dns .public_ip .cache_size .client_cidrs config.yaml.template gfwlist-extra-local.txt domain-overrides.conf; do
+for file in .remote_dns .local_dns .public_ip .cache_size .client_cidrs config.yaml.template domain-overrides.conf; do
     [[ ! -e "$live/$file" ]] || cp -a "$live/$file" "$stage/$file"
 done
 # Certificates are read-only input for validation, never part of publication.
 [[ ! -d "$live/certs" ]] || ln -s "$live/certs" "$stage/certs"
 BASE_DIR="$stage"
-GFWLIST_RAW="$stage/gfwlist.raw"; CHINALIST_RAW="$stage/chinalist.raw"
-GFWLIST_FILE="$stage/gfwlist.txt"; CHINALIST_FILE="$stage/chinalist.txt"
-GFWLIST_EXTRA_FILE="$stage/gfwlist-extra-local.txt"
+CHINALIST_RAW="$stage/chinalist.raw"; CHINALIST_FILE="$stage/chinalist.txt"
 MOSDNS_TEMPLATE="$stage/config.yaml.template"; MOSDNS_CONF="$stage/config.yaml"
 dns_stage="domain-cache"
+# GFWList is no longer downloaded: the mosdns template decides what is
+# proxied from the routing rules alone (rule-domains.txt), so a missing or
+# stale GFWList cache must not be able to block rule, allowlist or domain
+# changes.
 if [[ -z "$mode" ]]; then
-    update_domain_cache GFWList "$GFWLIST_URL" GFWLIST_RAW GFWLIST_FILE parse_gfwlist
     update_domain_cache ChinaList "$CHINALIST_URL" CHINALIST_RAW CHINALIST_FILE parse_chinalist valid_chinalist_domain
 else
-    if ! valid_domain_cache "$GFWLIST_FILE"; then
-        echo "[!] Offline GFWList cache is missing or invalid: $live/gfwlist.txt" >&2
-        exit 1
-    fi
     if ! valid_domain_cache "$CHINALIST_FILE" valid_chinalist_domain; then
         echo "[!] Offline ChinaList cache is missing or invalid: $live/chinalist.txt" >&2
         exit 1
@@ -444,9 +393,6 @@ fi
 dns_stage="rule-domains"
 RULE_DOMAIN_CACHE="$live/rule-domain-cache"
 build_rule_domains
-dns_stage="local-extras"
-append_local_gfwlist_extras
-sort -u -o "$GFWLIST_FILE" "$GFWLIST_FILE"
 dns_stage="domain-overrides"
 python3 - "$stage" <<'PYOVERRIDE'
 import pathlib, re, sys

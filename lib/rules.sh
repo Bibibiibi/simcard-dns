@@ -17,7 +17,7 @@ routing_lock() {
 }
 
 init_rules() {
-    info "Initializing GFWList and ChinaList..."
+    info "Initializing ChinaList and rule-domain lists..."
     if /usr/local/bin/update-mosdns-rules.sh; then
         ok "Routing rules initialized"
     else
@@ -244,7 +244,7 @@ import_rules() {
 init_policy_map() {
     mkdir -p "$(dirname "${POLICY_MAP}")"
     touch "${POLICY_MAP}"
-    local def; def="$(list_exit_names | head -n1)"; [[ -z "$def" ]] && def="direct"
+    local def; def="$(list_routable_exit_names | head -n1)"; [[ -z "$def" ]] && def="direct"
     local cat low target existing tmp; tmp="$(mktemp)"
     while IFS= read -r cat; do
         [[ -z "$cat" ]] && continue
@@ -270,11 +270,14 @@ set_policy() {
     [[ -z "$cat" || -z "$target" ]] && { err "Usage: $0 --set-policy <category> <exit|local|direct|block>"; exit 1; }
     case "$target" in
         local|direct|block) ;;
-        *) exit_exists "$target" || { err "Unknown target '$target' (use an exit name, local, direct, or block)"; exit 1; } ;;
+        *) exit_exists "$target" || { err "Unknown target '$target' (use an exit name, local, direct, or block)"; exit 1; }
+           [[ "$(exit_type "$target")" != router ]] || { err "'$target' is the smart router itself, not an exit; map the category to a real exit, local, direct, or block"; exit 1; } ;;
     esac
     mkdir -p "$(dirname "${POLICY_MAP}")"; touch "${POLICY_MAP}"
     old="$(mktemp)"; cp -a "${POLICY_MAP}" "$old"
-    grep -vF "${cat}=" "${POLICY_MAP}" > "${POLICY_MAP}.tmp" 2>/dev/null || true
+    # Replace exactly this category: a substring filter would also drop
+    # categories that merely end with the same text (AI= vs OpenAI=).
+    awk -F= -v c="$cat" '$1!=c' "${POLICY_MAP}" > "${POLICY_MAP}.tmp"
     mv "${POLICY_MAP}.tmp" "${POLICY_MAP}"
     printf '%s=%s\n' "$cat" "$target" >> "${POLICY_MAP}"
     if ! (regen_smart); then

@@ -1,4 +1,4 @@
-import base64
+import hashlib
 import os
 import pathlib
 import subprocess
@@ -29,7 +29,7 @@ exit 0
 echo fetch >> "$TEST_BASE/fetches"
 [[ "${ALLOW_FETCH:-0}" == 1 ]] || exit 99
 case "$3" in
-  */gfwlist.txt) cp "$TEST_BASE/gfw.raw" "$2";;
+  */gfwlist.txt) exit 97;;
   */accelerated-domains.china.conf) cp "$TEST_BASE/china.raw" "$2";;
   *) exit 98;;
 esac
@@ -38,8 +38,7 @@ esac
         for p in mock.iterdir():
             p.chmod(0o755)
         (self.dns / 'config.yaml.template').write_text((ROOT / 'lib/mosdns.yaml.template').read_text())
-        for name in ('gfwlist.txt', 'chinalist.txt'):
-            (self.dns / name).write_text('example.org\n')
+        (self.dns / 'chinalist.txt').write_text('example.org\n')
         (self.dns / '.public_ip').write_text('192.0.2.1\n')
         (self.dns / 'config.yaml').write_text('OLD-CONFIG\n')
         (self.dns / 'domain-overrides.conf').write_text('example.org=proxy\ndirect.example=direct\nblock.example=block\n')
@@ -60,7 +59,6 @@ esac
 
     def prepare_online(self, raw=None):
         self.env['ALLOW_FETCH'] = '1'
-        (self.base / 'gfw.raw').write_bytes(base64.b64encode(b'||example.org^\n'))
         if raw is None:
             raw = '# ChinaList fixture\n' + ''.join(
                 f'server=/{domain}/114.114.114.114\n' for domain in CHINA_DOMAINS)
@@ -123,16 +121,28 @@ esac
                         if not fallback:
                             self.assertEqual(before, {p.name: p.read_bytes() for p in self.dns.iterdir()})
 
-    def test_tld_support_does_not_relax_local_extras_overrides_or_gfw_cache(self):
-        (self.dns / 'gfwlist-extra-local.txt').write_text('cn\nexample.net\n')
-        result = self.run_update()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual((self.dns / 'gfwlist.txt').read_text(), 'example.net\nexample.org\n')
+    def test_tld_support_does_not_relax_overrides(self):
         (self.dns / 'domain-overrides.conf').write_text('cn=direct\n')
         self.assertNotEqual(self.run_update().returncode, 0)
-        (self.dns / 'domain-overrides.conf').write_text('')
-        (self.dns / 'gfwlist.txt').write_text('cn\n')
-        self.assertNotEqual(self.run_update().returncode, 0)
+
+    def test_gfwlist_is_neither_fetched_nor_required(self):
+        # The mosdns template no longer references gfwlist.txt, so a missing
+        # or garbage cache must not block offline rule/allowlist/domain changes
+        # and the scheduled update must not download it any more.
+        for data in (None, '<html>garbage</html>\n'):
+            with self.subTest(data=data):
+                path = self.dns / 'gfwlist.txt'
+                if data is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    path.write_text(data)
+                result = self.run_update('--offline')
+                self.assertEqual(result.returncode, 0, result.stderr)
+        self.prepare_online()
+        result = self.run_update('')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.base / 'fetches').read_text().count('fetch'), 1)
+        self.assertNotIn('gfw_domains', (self.dns / 'config.yaml').read_text())
 
     def test_override_snapshot_and_private_precedence(self):
         result = self.run_update()
@@ -185,7 +195,7 @@ esac
         self.assertEqual((self.base / 'restarts').read_text(), 'restart\n')
 
     def test_invalid_offline_cache_reports_which_cache_without_contents(self):
-        for name, label in (('gfwlist.txt', 'GFWList'), ('chinalist.txt', 'ChinaList')):
+        for name, label in (('chinalist.txt', 'ChinaList'),):
             for data in (None, '', 'example.org\n\n', '# comment\nexample.org\n',
                          'example.org\r\n', '<html>SECRET-SENTINEL</html>\n',
                          ' cn\n', 'cn \n', 'bad name\n', 'bad\tname\n',
@@ -211,12 +221,32 @@ esac
                     self.assertFalse((self.base / 'restarts').exists())
                     path.write_text('example.org\n')
 
-    def test_empty_and_comment_only_local_extras_do_not_fail(self):
-        for data in ('', '\n', '# comment\n', 'example.net\n\n', 'example.net'):
-            with self.subTest(data=data):
-                (self.dns / 'gfwlist-extra-local.txt').write_text(data)
-                result = self.run_update()
+    def test_offline_uses_cached_rule_sets_and_fetches_only_missing_ones(self):
+        # --offline runs on every rule/allowlist/domain change and on every
+        # rollback while the routing lock is held, so it must not re-download
+        # rule-sets that are already cached (a dead GitHub used to stall it
+        # 15 s per list); a list with no cache yet is still fetched once.
+        url = 'http://127.0.0.1:9/offline.list'  # discard port: refused at once
+        rules = self.base / 'rules.conf'
+        rules.write_text(f'RULE-SET,{url},proxy\n')
+        self.env['PGW_RULES_FILE'] = str(rules)
+        cache = self.dns / 'rule-domain-cache'
+        cache.mkdir()
+        cached = cache / (hashlib.sha256(url.encode()).hexdigest()[:24] + '.txt')
+        cached.write_text('cached.example\n')
+        for mode in ('--offline', '--render-only'):
+            with self.subTest(mode=mode, cached=True):
+                result = self.run_update(mode)
                 self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn('fetch failed', result.stderr)
+                self.assertIn('full:cached.example', (self.dns / 'rule-domains.txt').read_text())
+        cached.unlink()
+        result = self.run_update('--offline')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('fetch failed', result.stderr)
+        result = self.run_update('--render-only')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('fetch failed', result.stderr)
 
     def test_invalid_override_never_publishes(self):
         (self.dns / 'domain-overrides.conf').write_text('broken=unknown\n')
