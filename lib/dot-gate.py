@@ -41,7 +41,7 @@ LOG = logging.getLogger("dot-gate")
 ACTIVE = {}  # writer -> SNI the connection was admitted with
 HANDSHAKING = 0  # accepted connections still waiting for / checking the ClientHello
 _CACHE = {}
-_REJECTS = {}  # peer -> [last logged time, rejections suppressed since, distinct names since]
+_REJECTS = {}  # peer -> [last logged time, suppressed since, other names since, logged name]
 
 
 def _cached(path, parse):
@@ -99,11 +99,12 @@ def log_reject(peer, sni, now=None):
     """
     now = time.monotonic() if now is None else now
     shown = repr(sni[:SNI_LOG_MAX] + ("..." if len(sni) > SNI_LOG_MAX else ""))
+    name = sni[:SNI_LOG_MAX]
     entry = _REJECTS.get(peer)
     if entry and now - entry[0] < REJECT_LOG_INTERVAL:
         entry[1] += 1
-        if len(entry[2]) < 64:
-            entry[2].add(sni[:SNI_LOG_MAX])
+        if name != entry[3] and len(entry[2]) < 64:
+            entry[2].add(name)
         return False
     suppressed = entry[1] if entry else 0
     names = len(entry[2]) if entry else 0
@@ -113,7 +114,7 @@ def log_reject(peer, sni, now=None):
             del _REJECTS[stale]
         if len(_REJECTS) >= REJECT_LOG_MAX:
             _REJECTS.clear()
-    _REJECTS[peer] = [now, 0, set()]
+    _REJECTS[peer] = [now, 0, set(), name]
     if suppressed:
         LOG.info("rejected sni=%s from %s (+%d more, %d other name(s) since last report)",
                  shown, peer, suppressed, names)
