@@ -2,12 +2,15 @@ package main
 
 import (
 	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
 	"encoding/hex"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSelectBackendIPv4RejectsIPv6OnlyResults(t *testing.T) {
@@ -113,5 +116,299 @@ func TestConfiguredDNS(t *testing.T) {
 	}
 	if _, err := lookupBackendIPv4("localhost", path+".absent"); err == nil {
 		t.Fatal("missing file must not use system resolver")
+	}
+}
+
+// buildClientHello returns a TLS 1.3 ClientHello handshake message (type +
+// 24-bit length + body) that carries only a server_name extension.
+func buildClientHello(sni string) []byte {
+	body := []byte{0x03, 0x03}
+	body = append(body, make([]byte, 32)...) // random
+	body = append(body, 0x00)                // session id length
+	body = append(body, 0x00, 0x02, 0x13, 0x01)
+	body = append(body, 0x01, 0x00) // compression methods
+	name := []byte(sni)
+	sniList := append([]byte{0x00, byte(len(name) >> 8), byte(len(name))}, name...)
+	ext := append([]byte{byte(len(sniList) >> 8), byte(len(sniList))}, sniList...)
+	extBlock := append([]byte{0x00, 0x00, byte(len(ext) >> 8), byte(len(ext))}, ext...)
+	body = append(body, byte(len(extBlock)>>8), byte(len(extBlock)))
+	body = append(body, extBlock...)
+	hs := []byte{0x01, byte(len(body) >> 16), byte(len(body) >> 8), byte(len(body))}
+	return append(hs, body...)
+}
+
+func putVarint(v uint64) []byte {
+	switch {
+	case v < 64:
+		return []byte{byte(v)}
+	case v < 16384:
+		return []byte{0x40 | byte(v>>8), byte(v)}
+	default:
+		return []byte{0x80 | byte(v>>24), byte(v >> 16), byte(v >> 8), byte(v)}
+	}
+}
+
+func cryptoFrame(offset uint64, data []byte) []byte {
+	out := []byte{0x06}
+	out = append(out, putVarint(offset)...)
+	out = append(out, putVarint(uint64(len(data)))...)
+	return append(out, data...)
+}
+
+// buildInitial seals a QUIC v1 Initial packet with the client Initial keys
+// derived from dcid (RFC 9001 §5.2), the inverse of decryptInitialCrypto.
+func buildInitial(t *testing.T, dcid []byte, pn byte, payload []byte) []byte {
+	t.Helper()
+	for len(payload) < 64 {
+		payload = append(payload, 0x00) // PADDING so a 16-byte sample exists
+	}
+	initialSecret := hkdfExtract([]byte(initialSaltV1), dcid)
+	clientSecret := hkdfExpandLabel(initialSecret, "client in", nil, 32)
+	key := hkdfExpandLabel(clientSecret, "quic key", nil, 16)
+	iv := hkdfExpandLabel(clientSecret, "quic iv", nil, 12)
+	hp := hkdfExpandLabel(clientSecret, "quic hp", nil, 16)
+
+	header := []byte{0xc0} // long header, Initial, pn length 1
+	header = append(header, 0x00, 0x00, 0x00, 0x01)
+	header = append(header, byte(len(dcid)))
+	header = append(header, dcid...)
+	header = append(header, 0x00)        // scid length
+	header = append(header, 0x00)        // token length
+	length := 1 + len(payload) + tagSize // pn + ciphertext
+	header = append(header, 0x40|byte(length>>8), byte(length))
+	pnOffset := len(header)
+	header = append(header, pn)
+
+	nonce := append([]byte(nil), iv...)
+	nonce[11] ^= pn
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packet := append(append([]byte(nil), header...), aead.Seal(nil, nonce, payload, header)...)
+
+	hpBlock, err := aes.NewCipher(hp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mask := make([]byte, 16)
+	hpBlock.Encrypt(mask, packet[pnOffset+4:pnOffset+20])
+	packet[0] ^= mask[0] & 0x0f
+	packet[pnOffset] ^= mask[1]
+	return packet
+}
+
+func TestParseCryptoFramesTreatsPingAsFieldless(t *testing.T) {
+	ch := buildClientHello("ping.example")
+	plaintext := []byte{0x01} // PING, then CRYPTO
+	plaintext = append(plaintext, cryptoFrame(0, ch)...)
+	plaintext = append(plaintext, 0x00, 0x00)
+	frags, ok := parseCryptoFrames(plaintext)
+	if !ok || len(frags) != 1 {
+		t.Fatalf("frags=%v ok=%v, want one CRYPTO fragment after PING", frags, ok)
+	}
+	if frags[0].offset != 0 || !bytes.Equal(frags[0].data, ch) {
+		t.Fatalf("CRYPTO fragment mismatch: offset=%d len=%d", frags[0].offset, len(frags[0].data))
+	}
+}
+
+func TestExtractSNIFromBuiltInitialWithPing(t *testing.T) {
+	ch := buildClientHello("built.example")
+	payload := append([]byte{0x01}, cryptoFrame(0, ch)...)
+	packet := buildInitial(t, []byte{1, 2, 3, 4, 5, 6, 7, 8}, 0x05, payload)
+	sni, ok := extractSNI(packet)
+	if !ok || sni != "built.example" {
+		t.Fatalf("extractSNI=%q ok=%v", sni, ok)
+	}
+}
+
+func TestFragmentedClientHelloReassembly(t *testing.T) {
+	ch := buildClientHello("fragmented.example")
+	split := len(ch) / 2
+	a := &cryptoAssembler{}
+	if !a.add(cryptoFragment{offset: uint64(split), data: ch[split:]}) {
+		t.Fatal("second half rejected")
+	}
+	if sni, st := a.clientHelloSNI(); st != helloIncomplete {
+		t.Fatalf("only tail present: sni=%q status=%v, want incomplete", sni, st)
+	}
+	if !a.add(cryptoFragment{offset: 0, data: ch[:split]}) {
+		t.Fatal("first half rejected")
+	}
+	sni, st := a.clientHelloSNI()
+	if st != helloComplete || sni != "fragmented.example" {
+		t.Fatalf("sni=%q status=%v", sni, st)
+	}
+	if a.add(cryptoFragment{offset: maxCryptoBytes - 1, data: []byte{1, 2}}) {
+		t.Fatal("fragment beyond maxCryptoBytes accepted")
+	}
+	if _, st := parseClientHelloSNI([]byte{0x02, 0, 0, 4, 1, 2, 3, 4}); st != helloInvalid {
+		t.Fatalf("non-ClientHello status=%v, want invalid", st)
+	}
+}
+
+func TestFragmentedClientHelloAcrossInitialPackets(t *testing.T) {
+	ch := buildClientHello("multi-packet.example")
+	split := 40
+	dcid := []byte{9, 8, 7, 6, 5, 4, 3, 2}
+	first := buildInitial(t, dcid, 0x00, cryptoFrame(0, ch[:split]))
+	second := buildInitial(t, dcid, 0x01, cryptoFrame(uint64(split), ch[split:]))
+	if sni, ok := extractSNI(first); ok {
+		t.Fatalf("first packet alone yielded %q", sni)
+	}
+
+	m := newSessionManager(nil)
+	var got string
+	done := make(chan struct{})
+	m.connect = func(sess *Session, key, sni string) { got = sni; close(done) }
+	addr := &net.UDPAddr{IP: net.ParseIP("203.0.113.77"), Port: 4433}
+	sess, ok := m.openPending(addr)
+	if !ok {
+		t.Fatal("openPending refused")
+	}
+	m.queuePacket(sess, addr.String(), second)
+	m.queuePacket(sess, addr.String(), first)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("connect was never called")
+	}
+	if got != "multi-packet.example" {
+		t.Fatalf("connect got %q", got)
+	}
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	if len(sess.pending) != 2 || !bytes.Equal(sess.pending[0], second) || !bytes.Equal(sess.pending[1], first) {
+		t.Fatalf("pending queue does not hold both packets in arrival order (len=%d)", len(sess.pending))
+	}
+}
+
+func TestSelectBackendIPv4RejectsPrivateAndLocal(t *testing.T) {
+	for _, s := range []string{"127.0.0.1", "10.1.2.3", "172.16.0.9", "192.168.1.1", "169.254.1.1", "0.0.0.0", "224.0.0.1", "255.255.255.255"} {
+		if ip, ok := selectBackendIPv4([]net.IP{net.ParseIP(s)}); ok {
+			t.Errorf("%s accepted as backend (%s)", s, ip)
+		}
+	}
+	ip, ok := selectBackendIPv4([]net.IP{net.ParseIP("10.0.0.1"), net.ParseIP("203.0.113.5")})
+	if !ok || ip.String() != "203.0.113.5" {
+		t.Fatalf("got %v ok=%v, want 203.0.113.5", ip, ok)
+	}
+	localIPs["203.0.113.5"] = struct{}{}
+	defer delete(localIPs, "203.0.113.5")
+	if ip, ok := selectBackendIPv4([]net.IP{net.ParseIP("203.0.113.5")}); ok {
+		t.Fatalf("own address accepted as backend (%s)", ip)
+	}
+}
+
+func TestSessionLimits(t *testing.T) {
+	m := newSessionManager(nil)
+	m.maxSessions = 5
+	m.maxSessionsPerIP = 3
+	m.newSessionBucket = newTokenBucket(1000, 1000)
+	ip := net.ParseIP("198.51.100.1")
+	for port := 1; port <= 3; port++ {
+		if _, ok := m.openPending(&net.UDPAddr{IP: ip, Port: port}); !ok {
+			t.Fatalf("session %d from one IP refused", port)
+		}
+	}
+	if _, ok := m.openPending(&net.UDPAddr{IP: ip, Port: 4}); ok {
+		t.Fatal("per-IP limit not enforced")
+	}
+	m.removeSession((&net.UDPAddr{IP: ip, Port: 1}).String())
+	if _, ok := m.openPending(&net.UDPAddr{IP: ip, Port: 4}); !ok {
+		t.Fatal("slot not released after removeSession")
+	}
+	other := net.ParseIP("198.51.100.2")
+	for port := 1; port <= 2; port++ {
+		if _, ok := m.openPending(&net.UDPAddr{IP: other, Port: port}); !ok {
+			t.Fatalf("session %d from second IP refused", port)
+		}
+	}
+	if _, ok := m.openPending(&net.UDPAddr{IP: other, Port: 3}); ok {
+		t.Fatal("global limit not enforced")
+	}
+	if got := m.sessionCount(); got != 5 {
+		t.Fatalf("sessionCount=%d, want 5", got)
+	}
+
+	bucket := newTokenBucket(10, 2)
+	now := time.Now()
+	if !bucket.allowAt(now) || !bucket.allowAt(now) || bucket.allowAt(now) {
+		t.Fatal("token bucket burst not enforced")
+	}
+	if !bucket.allowAt(now.Add(100 * time.Millisecond)) {
+		t.Fatal("token bucket did not refill")
+	}
+
+	m.gcOnce(time.Now().Add(pendingTimeout + time.Second))
+	if got := m.sessionCount(); got != 0 {
+		t.Fatalf("pending sessions survived gc: %d", got)
+	}
+}
+
+func TestPendingQueueFlushesInOrder(t *testing.T) {
+	backend, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close()
+	listener, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	m := newSessionManager(listener)
+	addr := &net.UDPAddr{IP: net.ParseIP("203.0.113.9"), Port: 5000}
+	key := addr.String()
+	sess, ok := m.openPending(addr)
+	if !ok {
+		t.Fatal("openPending refused")
+	}
+	for i := 0; i < maxPendingPackets+2; i++ {
+		m.queuePacket(sess, key, []byte{0xc0, 0, 0, 0, 1, byte(i)}) // Initial-like but undecryptable
+	}
+	sess.mu.Lock()
+	queued := len(sess.pending)
+	sess.mu.Unlock()
+	if queued != maxPendingPackets {
+		t.Fatalf("pending=%d, want %d", queued, maxPendingPackets)
+	}
+
+	bc, err := net.DialUDP("udp", nil, backend.LocalAddr().(*net.UDPAddr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !m.attachBackend(sess, key, bc) {
+		t.Fatal("attachBackend failed")
+	}
+	defer m.removeSession(key)
+	buf := make([]byte, 64)
+	for i := 0; i < maxPendingPackets; i++ {
+		backend.SetReadDeadline(time.Now().Add(2 * time.Second))
+		n, _, err := backend.ReadFromUDP(buf)
+		if err != nil {
+			t.Fatalf("packet %d: %v", i, err)
+		}
+		if n != 6 || int(buf[5]) != i {
+			t.Fatalf("packet %d arrived out of order: %x", i, buf[:n])
+		}
+	}
+	sess.mu.Lock()
+	leftover := len(sess.pending)
+	sess.mu.Unlock()
+	if leftover != 0 {
+		t.Fatalf("pending queue not cleared: %d", leftover)
+	}
+	// Established sessions forward directly.
+	m.queuePacket(sess, key, []byte{0xc0, 0, 0, 0, 1, 0xff})
+	backend.SetReadDeadline(time.Now().Add(2 * time.Second))
+	n, _, err := backend.ReadFromUDP(buf)
+	if err != nil || n != 6 || buf[5] != 0xff {
+		t.Fatalf("direct forward failed: n=%d err=%v", n, err)
 	}
 }

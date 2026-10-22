@@ -34,12 +34,14 @@ MAX_CONN = int(os.environ.get("DOT_GATE_MAXCONN", "4096"))
 MAX_RECORD = 16384 + 2048  # TLS plaintext record limit plus slack
 REJECT_LOG_INTERVAL = float(os.environ.get("DOT_GATE_REJECT_LOG_INTERVAL", "60"))
 REJECT_LOG_MAX = 4096
+SNI_LOG_MAX = 253  # longest valid host name; anything longer is garbage
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s dot-gate %(message)s")
 LOG = logging.getLogger("dot-gate")
 ACTIVE = {}  # writer -> SNI the connection was admitted with
+HANDSHAKING = 0  # accepted connections still waiting for / checking the ClientHello
 _CACHE = {}
-_REJECTS = {}  # (peer, sni) -> [last logged time, rejections suppressed since]
+_REJECTS = {}  # peer -> [last logged time, rejections suppressed since, distinct names since]
 
 
 def _cached(path, parse):
@@ -87,30 +89,36 @@ def is_client(address):
 
 
 def log_reject(peer, sni, now=None):
-    """Log a rejected name at most once per interval per (peer, name).
+    """Log a rejected name at most once per interval per peer.
 
     A device still configured with a reset name retries several times a
-    second; logging every attempt would flood the journal. Returns True when
-    a line was written.
+    second, and a scanner can send a different name on every connection;
+    keying on the peer alone keeps either from flooding the journal. The
+    name is quoted and truncated so it cannot forge journal lines. Returns
+    True when a line was written.
     """
     now = time.monotonic() if now is None else now
-    key = (peer, sni)
-    entry = _REJECTS.get(key)
+    shown = repr(sni[:SNI_LOG_MAX] + ("..." if len(sni) > SNI_LOG_MAX else ""))
+    entry = _REJECTS.get(peer)
     if entry and now - entry[0] < REJECT_LOG_INTERVAL:
         entry[1] += 1
+        if len(entry[2]) < 64:
+            entry[2].add(sni[:SNI_LOG_MAX])
         return False
     suppressed = entry[1] if entry else 0
+    names = len(entry[2]) if entry else 0
     if len(_REJECTS) >= REJECT_LOG_MAX:
         cutoff = now - REJECT_LOG_INTERVAL
         for stale in [k for k, v in _REJECTS.items() if v[0] < cutoff]:
             del _REJECTS[stale]
         if len(_REJECTS) >= REJECT_LOG_MAX:
             _REJECTS.clear()
-    _REJECTS[key] = [now, 0]
+    _REJECTS[peer] = [now, 0, set()]
     if suppressed:
-        LOG.info("rejected sni=%s from %s (+%d more since last report)", sni, peer, suppressed)
+        LOG.info("rejected sni=%s from %s (+%d more, %d other name(s) since last report)",
+                 shown, peer, suppressed, names)
     else:
-        LOG.info("rejected sni=%s from %s", sni, peer)
+        LOG.info("rejected sni=%s from %s", shown, peer)
     return True
 
 
@@ -155,6 +163,9 @@ async def read_client_hello(reader):
 
 
 async def pipe(reader, writer):
+    """Copy one direction; on EOF half-close the other side (write_eof) so a
+    client that shuts down its write side after the query still gets the
+    answer. handle() closes both sockets once both directions are done."""
     try:
         while True:
             data = await reader.read(65536)
@@ -162,20 +173,26 @@ async def pipe(reader, writer):
                 break
             writer.write(data)
             await writer.drain()
-    except (ConnectionError, asyncio.CancelledError, OSError):
+    except (ConnectionError, OSError):
         pass
     finally:
         try:
-            writer.close()
-        except Exception:
+            writer.write_eof()
+        except (OSError, AttributeError, RuntimeError):
             pass
 
 
 async def handle(reader, writer):
+    global HANDSHAKING
     peer = writer.get_extra_info("peername") or ("?", 0)
-    if len(ACTIVE) >= MAX_CONN:
+    # Connections still reading their ClientHello hold a descriptor too, so
+    # they count against the limit (a scanner sending 5 bytes and nothing
+    # more would otherwise bypass it for HELLO_TIMEOUT seconds each).
+    if len(ACTIVE) + HANDSHAKING >= MAX_CONN:
         writer.close()
         return
+    HANDSHAKING += 1
+    admitted = False
     backend_writer = None
     try:
         try:
@@ -196,11 +213,18 @@ async def handle(reader, writer):
             LOG.warning("backend unavailable for %s: %s", peer[0], exc)
             return
         ACTIVE[writer] = sni
-        backend_writer.write(hello)
-        await backend_writer.drain()
+        admitted = True
+        HANDSHAKING -= 1
+        try:
+            backend_writer.write(hello)
+            await backend_writer.drain()
+        except (ConnectionError, OSError):
+            return
         await asyncio.gather(pipe(reader, backend_writer), pipe(backend_reader, writer))
     finally:
-        ACTIVE.pop(writer, None)
+        ACTIVE.pop(writer, None)  # cut_stale() may already have removed it
+        if not admitted:
+            HANDSHAKING -= 1
         for w in (writer, backend_writer):
             if w is not None:
                 try:

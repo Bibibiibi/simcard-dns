@@ -30,11 +30,14 @@ for value in os.environ.get("WA_SHIM_ALLOW_CIDR", "127.0.0.0/8").split(","):
 PEEK_TIMEOUT = float(os.environ.get("WA_SHIM_PEEK_TIMEOUT", "3"))
 CONNECT_TIMEOUT = float(os.environ.get("WA_SHIM_CONNECT_TIMEOUT", "8"))
 DNS_TTL = float(os.environ.get("WA_SHIM_DNS_TTL", "60"))
+DNS_NEGATIVE_TTL = float(os.environ.get("WA_SHIM_DNS_NEGATIVE_TTL", "10"))
+IDLE_TIMEOUT = float(os.environ.get("WA_SHIM_IDLE_TIMEOUT", "600"))
 MAX_CONN = int(os.environ.get("WA_SHIM_MAXCONN", "8192"))
 WA_PREFIXES = (b"ED", b"WA")
 KNOWN = (bytes.fromhex("45440001"), bytes.fromhex("57410603"))
 ACTIVE = 0
 _CACHE = ([], 0.0)
+_RESOLVE_LOCK = None  # created lazily inside the running loop
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s wa-shim %(message)s")
 LOG = logging.getLogger("wa-shim")
@@ -127,31 +130,47 @@ def query_a(host, resolver):
         sock.close()
 
 
+def _cache_fresh():
+    """Cached edge addresses while their TTL holds; failures are cached too
+    (for DNS_NEGATIVE_TTL) so a dead resolver does not cost every WhatsApp
+    connection a full round of 3-second queries."""
+    addresses, stamp = _CACHE
+    ttl = DNS_TTL if addresses else DNS_NEGATIVE_TTL
+    return stamp > 0 and time.time() - stamp < ttl
+
+
 async def resolve_edge():
-    global _CACHE
+    global _CACHE, _RESOLVE_LOCK
     try:
         ipaddress.ip_address(WA_HOST)
         return [] if WA_HOST in SELF_IPS else [WA_HOST]
     except ValueError:
         pass
-    if _CACHE[0] and time.time() - _CACHE[1] < DNS_TTL:
+    if _cache_fresh():
         return _CACHE[0]
-    loop = asyncio.get_running_loop()
-    addresses = []
-    for resolver in RESOLVERS:
-        addresses = await loop.run_in_executor(None, query_a, WA_HOST, resolver)
-        if addresses:
-            break
-    clean = []
-    for address in addresses:
-        try:
-            parsed = ipaddress.ip_address(address)
-        except ValueError:
-            continue
-        if address not in SELF_IPS and parsed.is_global:
-            clean.append(address)
-    _CACHE = (clean, time.time())
-    return clean
+    if _RESOLVE_LOCK is None:
+        _RESOLVE_LOCK = asyncio.Lock()
+    # Single flight: concurrent connections wait for one lookup instead of
+    # each occupying a thread of the (small) default executor.
+    async with _RESOLVE_LOCK:
+        if _cache_fresh():
+            return _CACHE[0]
+        loop = asyncio.get_running_loop()
+        addresses = []
+        for resolver in RESOLVERS:
+            addresses = await loop.run_in_executor(None, query_a, WA_HOST, resolver)
+            if addresses:
+                break
+        clean = []
+        for address in addresses:
+            try:
+                parsed = ipaddress.ip_address(address)
+            except ValueError:
+                continue
+            if address not in SELF_IPS and parsed.is_global:
+                clean.append(address)
+        _CACHE = (clean, time.time())
+        return clean
 
 
 async def peek(reader):
@@ -174,14 +193,16 @@ async def peek(reader):
 
 
 async def pipe(reader, writer):
+    """Copy one direction until EOF, error or IDLE_TIMEOUT seconds of silence
+    (a peer that never closes must not hold a relay open forever)."""
     try:
         while True:
-            data = await reader.read(65536)
+            data = await asyncio.wait_for(reader.read(65536), IDLE_TIMEOUT)
             if not data:
                 break
             writer.write(data)
             await writer.drain()
-    except (OSError, asyncio.CancelledError):
+    except (OSError, asyncio.TimeoutError):
         pass
     finally:
         try:

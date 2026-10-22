@@ -586,6 +586,7 @@ upgrade_code() (
         /usr/local/bin/simcard-dns /usr/local/bin/simcard-dns-apply-exit.sh
         /etc/systemd/system/quic-proxy.service /etc/systemd/system/simcard-dns-mihomo@.service
         /etc/systemd/system/dot-gate.service
+        /etc/systemd/system/simcard-dns-ios-profile.socket /etc/systemd/system/simcard-dns-ios-profile@.service
         /etc/simcard-dns/pgw-exit.nft "$GEO_NFT"
         /etc/letsencrypt/renewal-hooks/deploy/99-reload-mosdns.sh)
     local active=() units=(mosdns dot-gate sniproxy quic-proxy wa-shim simcard-dns-tgbot simcard-dns-mihomo@smart)
@@ -698,24 +699,8 @@ upgrade_code() (
     install_mosdns_binary
     upgrade_stage=service-unit
     # Migrate the managed unit without enabling it; only active units restart.
-    cat > /etc/systemd/system/quic-proxy.service <<'EOF'
-[Unit]
-Description=quic-proxy (UDP/QUIC SNI transparent proxy)
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=/opt/simcard-dns/bin/quic-proxy -l 0.0.0.0:443 -dns-file /var/lib/simcard-dns-quic/remote-dns
-ExecReload=/bin/kill -HUP $MAINPID
-Restart=on-failure
-RestartSec=5
-User=pxout
-LimitNOFILE=65535
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-
-[Install]
-WantedBy=multi-user.target
-EOF
+    write_quic_proxy_unit
+    write_ios_profile_units
     write_dot_gate_unit
     systemctl daemon-reload
     # Keep service enablement and active/stopped state unchanged; only active units restart.
@@ -724,6 +709,13 @@ EOF
         systemctl restart "$unit.service"
         systemctl is-active --quiet "$unit.service"
     done
+    # Socket options (connection caps) only apply after a socket restart;
+    # per-connection instances pick up the rewritten template by themselves.
+    if systemctl is-active --quiet simcard-dns-ios-profile.socket; then
+        upgrade_stage=restart-ios-profile-socket
+        systemctl restart simcard-dns-ios-profile.socket
+        systemctl is-active --quiet simcard-dns-ios-profile.socket
+    fi
     # mosdns now serves only 127.0.0.1:8853; the gate takes over public :853.
     # Hosts upgraded from before the gate existed get it enabled and started.
     if [[ " ${active[*]} " == *" mosdns "* && " ${active[*]} " != *" dot-gate "* ]]; then

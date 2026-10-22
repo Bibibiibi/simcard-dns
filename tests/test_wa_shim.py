@@ -4,6 +4,7 @@ import importlib.util
 import ipaddress
 import os
 import struct
+import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 os.environ.update(WA_SHIM_ALLOW_CIDR="103.143.92.0/23", WA_SHIM_SELF_IPS="127.0.0.1")
@@ -64,4 +65,51 @@ async def fragmented_peek():
 
 
 assert asyncio.run(fragmented_peek()).startswith(b"ED\x00\x01")
+
+
+async def negative_cache_and_single_flight():
+    calls = []
+    original_query = wa.query_a
+    wa.query_a = lambda host, resolver: (calls.append(resolver), [])[1]
+    wa._CACHE = ([], 0.0)
+    try:
+        assert await wa.resolve_edge() == []
+        first = len(calls)
+        assert first == len(wa.RESOLVERS), first
+        assert await wa.resolve_edge() == []          # failure is cached ...
+        assert len(calls) == first, calls             # ... so no new queries
+        wa._CACHE = ([], 0.0)
+        calls.clear()
+        await asyncio.gather(*[wa.resolve_edge() for _ in range(6)])
+        assert len(calls) == len(wa.RESOLVERS), calls  # single flight
+        wa._CACHE = ([], time.time() - wa.DNS_NEGATIVE_TTL - 1)
+        calls.clear()
+        await wa.resolve_edge()
+        assert len(calls) == len(wa.RESOLVERS), calls  # negative entry expired
+    finally:
+        wa.query_a = original_query
+        wa._CACHE = ([], 0.0)
+
+
+asyncio.run(negative_cache_and_single_flight())
+
+
+async def idle_relay_times_out():
+    class Writer:
+        eof = False
+        def write(self, _data): pass
+        async def drain(self): pass
+        def write_eof(self): self.eof = True
+    saved = wa.IDLE_TIMEOUT
+    wa.IDLE_TIMEOUT = 0.05
+    try:
+        reader = asyncio.StreamReader()  # peer never sends and never closes
+        writer = Writer()
+        await asyncio.wait_for(wa.pipe(reader, writer), 2)
+        return writer.eof
+    finally:
+        wa.IDLE_TIMEOUT = saved
+
+
+assert asyncio.run(idle_relay_times_out()) is True
 print("wa shim policy OK")

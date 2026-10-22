@@ -3,7 +3,9 @@
 Runs the real lib/ios-http.py the way systemd does (Accept=yes: the client
 socket is its stdin/stdout): a TLS client gets the profile, a plain HTTP
 request is redirected to https://<same host>/<same path>, and only when no
-certificate exists yet is the profile served over plain HTTP.
+certificate exists yet is the profile served over plain HTTP. Every answer
+requires the Host header to name the current DoT domain: the domain is the
+secret that admits phones at dot-gate, so asking the bare IP yields 404.
 """
 import os
 from pathlib import Path
@@ -30,6 +32,8 @@ class IosHttpsTest(unittest.TestCase):
         cls.www.mkdir()
         (cls.www / "ios-dot.mobileconfig").write_bytes(PROFILE)
         (cls.www / "index.html").write_text("<a href=/ios-dot.mobileconfig>x</a>")
+        cls.domain_file = d / "domain"
+        cls.domain_file.write_text("ABC.dns.example.net\n")
         cls.cert, cls.key = d / "fullchain.pem", d / "privkey.pem"
         subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
                         "-subj", "/CN=abc.dns.example.net", "-keyout", str(cls.key), "-out", str(cls.cert)],
@@ -39,7 +43,7 @@ class IosHttpsTest(unittest.TestCase):
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
-    def serve_once(self, cert, key):
+    def serve_once(self, cert, key, domain_file=None):
         """Start ios-http.py on one accepted connection; return the client socket."""
         listener = socket.socket()
         listener.bind(("127.0.0.1", 0))
@@ -47,7 +51,8 @@ class IosHttpsTest(unittest.TestCase):
         client = socket.create_connection(listener.getsockname())
         conn, _ = listener.accept()
         listener.close()
-        env = dict(os.environ, WWW_DIR=str(self.www), IOS_TLS_CERT=str(cert), IOS_TLS_KEY=str(key))
+        env = dict(os.environ, WWW_DIR=str(self.www), IOS_TLS_CERT=str(cert), IOS_TLS_KEY=str(key),
+                   IOS_DOMAIN_FILE=str(domain_file or self.domain_file))
         proc = subprocess.Popen([sys.executable, str(SCRIPT)], stdin=conn, stdout=conn, env=env)
         conn.close()
         self.addCleanup(proc.wait, 10)
@@ -83,15 +88,52 @@ class IosHttpsTest(unittest.TestCase):
         self.assertIn(b"Location: https://abc.dns.example.net:8111/ios-dot.mobileconfig\r\n", reply)
         self.assertNotIn(PROFILE, reply, "the profile must never be sent over plain HTTP when TLS is available")
 
-    def test_suspicious_host_is_not_reflected(self):
+    def test_other_hosts_get_404_and_are_never_reflected(self):
+        for host in (b"evil.example", b"a\"b<c>", b"203.0.113.5:8111", b"127.0.0.1", b"",
+                     b"abc.dns.example.net.evil.example", b"xabc.dns.example.net"):
+            with self.subTest(host=host):
+                raw = self.serve_once(self.cert, self.key)
+                with raw:
+                    reply = self.exchange(raw, b"GET /ios-dot.mobileconfig HTTP/1.1\r\nHost: " + host + b"\r\nX: y\r\n\r\n")
+                self.assertTrue(reply.startswith(b"HTTP/1.1 404"), reply[:80])
+                self.assertNotIn(b"Location:", reply)
+                self.assertNotIn(PROFILE, reply)
+
+    def test_tls_client_with_wrong_host_gets_404(self):
+        raw = self.serve_once(self.cert, self.key)
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        with ctx.wrap_socket(raw, server_hostname="abc.dns.example.net") as tls:
+            reply = self.exchange(tls, b"GET /ios-dot.mobileconfig HTTP/1.1\r\nHost: 203.0.113.5:8111\r\n\r\n")
+        self.assertTrue(reply.startswith(b"HTTP/1.1 404"), reply[:80])
+        self.assertNotIn(PROFILE, reply)
+
+    def test_host_matching_is_case_insensitive_and_ignores_port_and_dot(self):
         raw = self.serve_once(self.cert, self.key)
         with raw:
-            reply = self.exchange(raw, b"GET / HTTP/1.1\r\nHost: evil.example\r\nX: y\r\n\r\n")
-        self.assertIn(b"Location: https://evil.example/", reply)
-        raw = self.serve_once(self.cert, self.key)
+            reply = self.exchange(raw, b"GET /index.html HTTP/1.1\r\nHost: abc.DNS.example.net.\r\n\r\n")
+        self.assertTrue(reply.startswith(b"HTTP/1.1 301"), reply[:80])
+
+    def test_unknown_domain_serves_nothing(self):
+        missing = Path(self.tmp.name) / "no-domain"
+        raw = self.serve_once(self.cert, self.key, domain_file=missing)
         with raw:
-            reply = self.exchange(raw, b"GET / HTTP/1.1\r\nHost: a\"b<c>\r\n\r\n")
-        self.assertNotIn(b"Location:", reply)
+            reply = self.exchange(raw, b"GET /ios-dot.mobileconfig HTTP/1.1\r\nHost: abc.dns.example.net:8111\r\n\r\n")
+        self.assertTrue(reply.startswith(b"HTTP/1.1 404"), reply[:80])
+        self.assertNotIn(PROFILE, reply)
+
+    def test_unit_runs_unprivileged_and_capped(self):
+        services = (ROOT / "lib" / "services.sh").read_text()
+        unit = services.split("simcard-dns-ios-profile@.service <<EOF")[1].split("EOF")[0]
+        self.assertIn("User=mosdns", unit)
+        self.assertNotIn("User=root", unit)
+        for option in ("NoNewPrivileges=true", "ProtectSystem=strict", "ProtectHome=true", "CapabilityBoundingSet="):
+            self.assertIn(option, unit)
+        self.assertIn("IOS_DOMAIN_FILE=", unit)
+        sock = services.split("simcard-dns-ios-profile.socket <<EOF")[1].split("EOF")[0]
+        self.assertIn("MaxConnectionsPerSource=", sock)
+        self.assertIn("MaxConnections=", sock)
 
     def test_without_a_certificate_plain_http_still_works(self):
         missing = Path(self.tmp.name) / "missing.pem"

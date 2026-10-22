@@ -48,18 +48,28 @@ class RejectLogTest(unittest.TestCase):
     def setUp(self):
         gate._REJECTS.clear()
 
-    def test_rejections_are_logged_once_per_interval_with_suppressed_count(self):
+    def test_rejections_are_logged_once_per_interval_per_peer(self):
         with self.assertLogs("dot-gate", level="INFO") as logs:
             self.assertTrue(gate.log_reject("198.51.100.7", "old.dns.example.com", now=100.0))
             for i in range(5):
                 self.assertFalse(gate.log_reject("198.51.100.7", "old.dns.example.com", now=100.0 + i))
-            # A different name or peer is reported on its own.
-            self.assertTrue(gate.log_reject("198.51.100.7", "older.dns.example.com", now=101.0))
+            # A scanner changing the name on every connection is still one
+            # line per peer per interval; another peer is reported on its own.
+            self.assertFalse(gate.log_reject("198.51.100.7", "older.dns.example.com", now=101.0))
             self.assertTrue(gate.log_reject("203.0.113.9", "old.dns.example.com", now=101.0))
             # After the interval the next attempt is logged with the skipped count.
             self.assertTrue(gate.log_reject("198.51.100.7", "old.dns.example.com", now=100.0 + gate.REJECT_LOG_INTERVAL))
-        self.assertEqual(len(logs.output), 4)
-        self.assertIn("(+5 more since last report)", logs.output[-1])
+        self.assertEqual(len(logs.output), 3)
+        self.assertIn("(+6 more, 1 other name(s) since last report)", logs.output[-1])
+
+    def test_logged_name_is_quoted_and_truncated(self):
+        with self.assertLogs("dot-gate", level="INFO") as logs:
+            gate.log_reject("198.51.100.8", "evil\nfake journal line", now=1.0)
+            gate.log_reject("198.51.100.9", "a" * 5000, now=1.0)
+        self.assertNotIn("\nfake", logs.output[0])
+        self.assertIn("'evil\\nfake journal line'", logs.output[0])
+        self.assertLess(len(logs.output[1]), 400)
+        self.assertIn("...'", logs.output[1])
 
     def test_tracking_table_stays_bounded(self):
         saved = gate.REJECT_LOG_MAX
@@ -104,6 +114,7 @@ class GateTest(unittest.IsolatedAsyncioTestCase):
         gate.HELLO_TIMEOUT = 2
         gate._CACHE.clear()
         gate.ACTIVE.clear()
+        gate.HANDSHAKING = 0
         self.server = await asyncio.start_server(gate.handle, "127.0.0.1", 0)
         self.port = self.server.sockets[0].getsockname()[1]
 
@@ -170,6 +181,40 @@ class GateTest(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(reader.read(100), 3)
         writer.close()
         self.assertEqual(self.sources, ["127.0.0.2", "127.0.0.3"])
+
+    async def test_handshaking_connections_count_against_the_limit(self):
+        saved = gate.MAX_CONN
+        gate.MAX_CONN = 1
+        try:
+            idle_reader, idle_writer = await self.connect(b"\x16")  # never finishes its hello
+            await asyncio.sleep(0.05)
+            self.assertEqual(gate.HANDSHAKING, 1)
+            writer = None
+            try:
+                reader, writer = await self.connect(client_hello("current.dns.example.com"))
+                refused = await asyncio.wait_for(reader.read(100), 3)
+            except ConnectionError:
+                refused = b""  # closed with our hello unread: RST instead of FIN
+            self.assertEqual(refused, b"", "over the limit must be refused")
+            if writer is not None:
+                writer.close()
+            idle_writer.close()
+            await asyncio.sleep(0.1)
+            self.assertEqual(gate.HANDSHAKING, 0)
+            self.assertEqual(self.received, [])
+        finally:
+            gate.MAX_CONN = saved
+
+    async def test_client_half_close_still_gets_the_answer(self):
+        hello = client_hello("current.dns.example.com")
+        reader, writer = await self.connect(hello)
+        writer.write_eof()  # query sent, client shuts down its write side
+        self.assertEqual(await asyncio.wait_for(reader.read(100), 3), b"BACKEND-OK")
+        self.assertEqual(await asyncio.wait_for(reader.read(100), 3), b"")
+        writer.close()
+        await asyncio.sleep(0.1)
+        self.assertEqual(gate.HANDSHAKING, 0)
+        self.assertEqual(len(gate.ACTIVE), 0)
 
     def test_is_client_handles_ipv4_mapped_addresses(self):
         self.assertTrue(gate.is_client("::ffff:127.0.0.9"))

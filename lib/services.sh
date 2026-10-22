@@ -351,6 +351,45 @@ install_dot_gate() {
     ok "DoT entry gate installed (public :853 -> mosdns 127.0.0.1:8853, current domain only)"
 }
 
+# UDP 443 is reachable by spoofable sources, so the proxy runs as pxout in a
+# tight sandbox with a memory ceiling. It only reads its DNS file. SIGHUP
+# re-validates that file (quic-proxy handles it; it no longer kills the
+# process). Shared by install and --upgrade.
+write_quic_proxy_unit() {
+    cat > /etc/systemd/system/quic-proxy.service <<'EOF'
+[Unit]
+Description=quic-proxy (UDP/QUIC SNI transparent proxy)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/opt/simcard-dns/bin/quic-proxy -l 0.0.0.0:443 -dns-file /var/lib/simcard-dns-quic/remote-dns
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+User=pxout
+LimitNOFILE=65535
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=true
+LockPersonality=true
+SystemCallArchitectures=native
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
 install_quic_proxy() {
     ensure_proxy_user
     if [[ ! -x "${BASE_DIR}/bin/quic-proxy" ]]; then
@@ -375,24 +414,7 @@ install_quic_proxy() {
     else
         info "quic-proxy already compiled"
     fi
-    cat > /etc/systemd/system/quic-proxy.service <<'EOF'
-[Unit]
-Description=quic-proxy (UDP/QUIC SNI transparent proxy)
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=/opt/simcard-dns/bin/quic-proxy -l 0.0.0.0:443 -dns-file /var/lib/simcard-dns-quic/remote-dns
-ExecReload=/bin/kill -HUP $MAINPID
-Restart=on-failure
-RestartSec=5
-User=pxout
-LimitNOFILE=65535
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-
-[Install]
-WantedBy=multi-user.target
-EOF
+    write_quic_proxy_unit
     systemctl daemon-reload
     systemctl enable --quiet quic-proxy
     ok "quic-proxy installed"
@@ -455,6 +477,51 @@ EOF
     systemctl daemon-reload
     systemctl enable --quiet mosdns
     ok "mosdns configured"
+}
+
+# The per-connection iOS profile responder: unprivileged and sandboxed (it
+# only reads the profile, the DoT certificate and the domain file, all
+# readable by the mosdns user), with the socket capping how many python3
+# processes a scanner can fan out. Shared by install and --upgrade.
+write_ios_profile_units() {
+    local py="${1:-$(command -v python3 || echo /usr/bin/python3)}"
+    cat > /etc/systemd/system/simcard-dns-ios-profile.socket <<EOF
+[Unit]
+Description=Proxy Gateway iOS profile HTTPS socket
+
+[Socket]
+ListenStream=0.0.0.0:${IOS_PROFILE_PORT}
+Accept=yes
+# Each connection is one python3 process (~15 MB, at most 10 s): cap the
+# fan-out so a scanner cannot exhaust a small host's memory.
+MaxConnections=16
+MaxConnectionsPerSource=4
+
+[Install]
+WantedBy=sockets.target
+EOF
+    # The responder only reads the profile, the DoT certificate and the domain
+    # file (all readable by the mosdns user); it never needs root.
+    cat > /etc/systemd/system/simcard-dns-ios-profile@.service <<EOF
+[Unit]
+Description=Proxy Gateway iOS profile responder (per-connection)
+
+[Service]
+Type=simple
+ExecStart=${py} ${BASE_DIR}/bin/ios-http.py
+Environment=WWW_DIR=${WWW_DIR}
+Environment=IOS_DOMAIN_FILE=${CONF_DIR}/.domain:/etc/mosdns/.domain
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+User=mosdns
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateDevices=true
+CapabilityBoundingSet=
+EOF
 }
 
 generate_ios_profile() {
@@ -557,30 +624,7 @@ EOF
         systemctl disable --now simcard-dns-ios-profile.service 2>/dev/null || true
     fi
     rm -f /etc/systemd/system/simcard-dns-ios-profile.service
-    cat > /etc/systemd/system/simcard-dns-ios-profile.socket <<EOF
-[Unit]
-Description=Proxy Gateway iOS profile HTTPS socket
-
-[Socket]
-ListenStream=0.0.0.0:${IOS_PROFILE_PORT}
-Accept=yes
-
-[Install]
-WantedBy=sockets.target
-EOF
-    cat > /etc/systemd/system/simcard-dns-ios-profile@.service <<EOF
-[Unit]
-Description=Proxy Gateway iOS profile responder (per-connection)
-
-[Service]
-Type=simple
-ExecStart=${py} ${BASE_DIR}/bin/ios-http.py
-Environment=WWW_DIR=${WWW_DIR}
-StandardInput=socket
-StandardOutput=socket
-StandardError=journal
-User=root
-EOF
+    write_ios_profile_units "$py"
     systemctl daemon-reload
     systemctl enable --quiet --now simcard-dns-ios-profile.socket
     echo "$profile_url" > "${WWW_DIR}/ios-profile-url.txt"

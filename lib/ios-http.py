@@ -12,6 +12,14 @@ TLS. The profile names the DoT domain and points the phone at this resolver, so
 plain HTTP would leak the name and let anyone on the path swap the profile:
 a plain request is redirected to https://<same host>/<same path> instead. Only
 when no certificate exists yet is the profile served over plain HTTP.
+
+The DoT domain is a secret: it is random, kept out of certificate transparency
+by the wildcard certificate, and dot-gate admits only connections that name
+it. So this responder answers only requests whose Host header already names
+the current domain; a scanner asking the bare IP gets 404 and learns nothing.
+
+Runs unprivileged (the mosdns user can read the certificate and the domain
+file) under a systemd sandbox; see write_ios_profile_units in services.sh.
 """
 import os
 import signal
@@ -22,6 +30,8 @@ import sys
 WWW_DIR = os.environ.get("WWW_DIR", "/opt/simcard-dns/www")
 TLS_CERT = os.environ.get("IOS_TLS_CERT", "/etc/mosdns/certs/fullchain.pem")
 TLS_KEY = os.environ.get("IOS_TLS_KEY", "/etc/mosdns/certs/privkey.pem")
+DOMAIN_FILES = [x for x in os.environ.get(
+    "IOS_DOMAIN_FILE", "/opt/simcard-dns/etc/.domain:/etc/mosdns/.domain").split(":") if x]
 
 ROUTES = {
     "/ios-dot.mobileconfig": ("ios-dot.mobileconfig", "application/x-apple-aspen-config"),
@@ -61,16 +71,42 @@ def read_request(inp):
     return parts[0], parts[1].split("?", 1)[0], host
 
 
+def current_domain():
+    """The DoT domain from the first readable domain file ("" when unknown)."""
+    for path in DOMAIN_FILES:
+        try:
+            with open(path, encoding="utf-8") as f:
+                value = f.read().strip().lower().rstrip(".")
+        except OSError:
+            continue
+        if value:
+            return value
+    return ""
+
+
+def host_matches(host, domain):
+    """True when the Host header (optionally with :port) names `domain`."""
+    if not host or not domain:
+        return False
+    name = host.strip().lower()
+    if name.startswith("["):
+        return False
+    name = name.rsplit(":", 1)[0] if name.count(":") == 1 else name
+    return name.rstrip(".") == domain
+
+
 def serve(inp, out, tls, tls_available):
     method, path, host = read_request(inp)
     if method != "GET":
         write(out, "400 Bad Request", "text/plain", b"bad request\n")
         return
     route = ROUTES.get(path)
-    if not route:
+    # Fail closed: without the current domain (file unreadable) nothing is
+    # served either, rather than handing the profile to whoever asks.
+    if not route or not host_matches(host, current_domain()):
         write(out, "404 Not Found", "text/plain", b"not found\n")
         return
-    if not tls and tls_available and host and all(c.isalnum() or c in ".-:[]" for c in host):
+    if not tls and tls_available and all(c.isalnum() or c in ".-:" for c in host):
         location = "https://%s%s" % (host, path)
         write(out, "301 Moved Permanently", "text/plain", b"use https\n", "Location: %s\r\n" % location)
         return
