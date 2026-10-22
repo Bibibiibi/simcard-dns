@@ -27,7 +27,7 @@ services_menu_body="$(sed -n '/^def services_menu(prefix):/,/^$/p' "${bot}")"
 [[ "${bot_body}" != *'os.system'* ]] || fail "tgbot.py must never use os.system"
 
 # --- exit listing must ignore runtime iface aliases (Unicode exit names) ----
-[[ "${bot_body}" == *'os.path.islink(os.path.join("/etc/wireguard", f))'* ]] \
+[[ "${bot_body}" == *'os.path.islink(os.path.join(WG_DIR_PATH, f))'* ]] \
     || fail "tgbot.py exit listing must skip runtime iface symlinks"
 [[ "${bot_body}" == *'def validate_mgmt_path('* ]] || fail "tgbot.py must validate the management entrypoint"
 [[ "${bot_body}" == *'os.path.isabs(MGMT)'* ]] || fail "tgbot.py MGMT must be an absolute path"

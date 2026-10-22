@@ -195,12 +195,14 @@ printf 'completed\\n'
         (self.fs / 'etc/simcard-dns/rules.conf').unlink()
         self.put('/etc/mosdns/.remote_dns', '22.22.22.22\n')
         self.put('/etc/mosdns/.local_dns', '101.226.4.6 218.30.118.6 180.76.76.76 119.29.29.29\n')
+        # GFWList is no longer required; an unusable ChinaList cache is what
+        # must stop the offline DNS rebuild and roll the upgrade back.
         self.put('/etc/mosdns/gfwlist.txt', '')
-        self.put('/etc/mosdns/chinalist.txt', 'example.cn\n')
+        self.put('/etc/mosdns/chinalist.txt', '')
         before = self.snapshot()
         result = self.run_upgrade()
         self.assertNotEqual(result.returncode, 0, self.detail)
-        self.assertIn('Offline GFWList cache is missing or invalid', self.detail)
+        self.assertIn('Offline ChinaList cache is missing or invalid', self.detail)
         self.assertIn('stage=offline-dns exit=1', self.detail)
         self.assertEqual(before, self.snapshot(), self.detail)
         # Rollback restarts the services that were active before the

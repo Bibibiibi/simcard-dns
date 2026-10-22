@@ -86,7 +86,8 @@ esac
                          ''.join(domain + '\n' for domain in sorted(CHINA_DOMAINS)))
         self.assertEqual((self.dns / 'chinalist.raw').read_bytes(),
                          (self.base / 'china.raw').read_bytes())
-        self.assertEqual((self.base / 'fetches').read_text(), 'fetch\nfetch\n')
+        # Only ChinaList is downloaded now; GFWList is no longer fetched.
+        self.assertEqual((self.base / 'fetches').read_text(), 'fetch\n')
         self.assertNotIn('keeping valid previous', result.stderr)
 
     def test_online_failed_download_keeps_complete_chinalist_cache(self):
