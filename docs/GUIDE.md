@@ -41,7 +41,7 @@ remote-dns: on
 | --- | --- |
 | 出口名（如 `tw`、`us`） | 经服务器，从该出口出去 |
 | `local` | 经服务器，从服务器本机 IP 出去 |
-| `direct` | 不经服务器，手机直连（与没写规则相同，可用来给某个规则集开例外） |
+| `direct` | 不经服务器，手机直连（与没写规则相同，可用来给某个规则集开例外：写在规则集**前面**的 `direct` 规则会把这些域名从后面规则集的 DNS 名单里去掉） |
 | `block` | DNS 直接拒绝 |
 
 分类（导入规则时的分组名）按分类映射解析成上面的目标。DNS 只能按域名判断，所以 `DOMAIN`、`DOMAIN-SUFFIX`、`DOMAIN-KEYWORD`、`GEOSITE` 和域名类规则集会决定是否经过服务器；`IP-CIDR`、`GEOIP` 只对已经进入服务器的流量生效，`FINAL` 不再起作用（未命中即直连）。`.mrs` 规则集会改读同目录的 `.list` 文本版本（MetaCubeX meta-rules-dat 均提供），找不到时该规则集只在服务器出口层生效。规则变化后 DNS 名单会自动重建；远程规则集在 `--update-rules` 时刷新。
@@ -60,13 +60,16 @@ sudo /opt/simcard-dns/bin/simcard-dns --set-rules rules.conf
 sudo /opt/simcard-dns/bin/simcard-dns --set-exit smart
 ```
 
-单独追加规则或规则集（不覆盖整份文件）：
+单独追加规则或规则集（不覆盖整份文件；`--add-rule` 加在最前面，所以适合用来给已有规则集开例外）：
 
 ```bash
 sudo /opt/simcard-dns/bin/simcard-dns --add-rule 'DOMAIN-SUFFIX,openai.com,us'
 sudo /opt/simcard-dns/bin/simcard-dns --add-rule 'GEOSITE,openai,local'      # 经服务器本机 IP 出去
 sudo /opt/simcard-dns/bin/simcard-dns --add-ruleset 'https://example.com/openai.mrs' us
+sudo /opt/simcard-dns/bin/simcard-dns --add-rule 'DOMAIN-SUFFIX,gvt1.com,direct'  # 例外：YouTube 规则集里的 gvt1.com 是 Google Play 下载 CDN，让它直连
 ```
+
+规则按顺序匹配，第一条命中的生效（与 mihomo 一致），DNS 名单也照这个顺序：排在前面的 `direct` 规则会把它覆盖的域名从后面的规则集里去掉，排在后面的则不影响前面已命中的规则。
 
 规则类型：`DOMAIN`、`DOMAIN-SUFFIX`、`DOMAIN-KEYWORD`、`IP-CIDR`、`GEOSITE`、`GEOIP`、`RULE-SET`、`FINAL`。
 

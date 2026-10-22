@@ -39,7 +39,9 @@ valid_chinalist_domain() {
 # a smart-routing rule (built-in defaults + user rules, including remote
 # rule-sets and GEOSITE) are answered with the server IP for client networks;
 # everything else resolves normally so phones connect directly. Rules whose
-# target resolves to direct are left alone, block targets are refused in DNS.
+# target resolves to direct are left alone and, like mihomo's first-match
+# order, shadow the same domains in any later rule; block targets are refused
+# in DNS.
 # Remote lists are cached; --render-only never touches the network.
 build_rule_domains() {
     python3 - "$DEFAULT_RULES_FILE" "$USER_RULES_FILE" "$POLICY_MAP_FILE" \
@@ -140,6 +142,25 @@ def ruleset_text(source):
         return ""
 
 result = {"proxy": set(), "block": set()}
+direct = []  # entries of earlier direct rules, in order
+
+def shadowed(item):
+    """True when an earlier direct rule already matches every name this entry
+    covers. mihomo takes the first matching rule, so a direct rule placed
+    before a rule-set carves its domains out of the set (gvt1.com ahead of a
+    YouTube list keeps Play downloads off the gateway); the DNS lists must
+    agree or phones are sent to the gateway for names it will route direct."""
+    kind, _, value = item.partition(":")
+    for d in direct:
+        dkind, _, dvalue = d.partition(":")
+        if dkind == "domain" and kind in ("domain", "full") and (value == dvalue or value.endswith("." + dvalue)):
+            return True
+        if dkind == "full" and kind == "full" and value == dvalue:
+            return True
+        if dkind == "keyword" and dvalue in value:
+            return True
+    return False
+
 for path in (default_rules, user_rules):
     try:
         lines = open(path, encoding="utf-8").read().splitlines()
@@ -154,16 +175,19 @@ for path in (default_rules, user_rules):
         if len(parts) < 3 or kind in ("FINAL", "IP-CIDR", "IP-CIDR6", "GEOIP"):
             continue
         act = action(parts[-1])
-        if act is None:
-            continue
         if kind in ("DOMAIN", "DOMAIN-SUFFIX", "DOMAIN-KEYWORD"):
             item = entry({"DOMAIN": "full", "DOMAIN-SUFFIX": "domain", "DOMAIN-KEYWORD": "keyword"}[kind], parts[1])
-            if item:
-                result[act].add(item)
+            items = {item} if item else set()
         elif kind == "GEOSITE":
-            result[act] |= parse_list(fetch(GEOSITE % parts[1].lower()))
+            items = parse_list(fetch(GEOSITE % parts[1].lower()))
         elif kind in ("RULE-SET", "RULESET"):
-            result[act] |= parse_list(ruleset_text(parts[1]))
+            items = parse_list(ruleset_text(parts[1]))
+        else:
+            continue
+        if act is None:
+            direct.extend(sorted(items))
+            continue
+        result[act] |= {x for x in items if not shadowed(x)}
 for key, out in (("proxy", out_proxy), ("block", out_block)):
     with open(out, "w", encoding="utf-8") as handle:
         handle.write("".join(x + "\n" for x in sorted(result[key])))

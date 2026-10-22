@@ -26,6 +26,8 @@ cache() { # url -> pre-seeded cache file, as the updater would have stored it
 
 printf 'payload:\n  - "+.speed.example"\n  - exact-speed.example\n' > "${tmp}/speed.yaml"
 printf 'RULE-SET,%s,Speedtest\n' "${tmp}/speed.yaml" > "$DEFAULT_RULES_FILE"
+printf 'payload:\n  - "+.cdn.example"\n  - dl.cdn.example\n  - "+.video.example"\n  - DOMAIN-SUFFIX,tracker.example\n  - DOMAIN,direct.exact.example\n' > "${tmp}/video.yaml"
+printf 'payload:\n  - "+.shop.example"\n' > "${tmp}/shop.yaml"
 cat > "$USER_RULES_FILE" <<RULES
 DOMAIN-SUFFIX,openai.com,tw
 DOMAIN,exact.example,tw
@@ -38,7 +40,15 @@ IP-CIDR,1.2.3.0/24,tw
 GEOIP,cn,direct
 GEOSITE,Gemini,tw
 RULE-SET,https://example.invalid/rules/grok.mrs,AI
+DOMAIN-SUFFIX,grok.com,direct
 RULE-SET,https://example.invalid/uncached.yaml,tw
+DOMAIN-SUFFIX,cdn.example,direct
+DOMAIN-KEYWORD,tracker,direct
+DOMAIN,direct.exact.example,direct
+RULE-SET,${tmp}/shop.yaml,Domestic
+RULE-SET,${tmp}/video.yaml,local
+DOMAIN-SUFFIX,api.shop.example,tw
+DOMAIN-SUFFIX,ads.cdn.example,block
 FINAL,tw
 RULES
 printf 'Speedtest=local\nDomestic=direct\nAI=tw\n' > "$POLICY_MAP_FILE"
@@ -48,11 +58,16 @@ cache "https://example.invalid/rules/grok.list" $'payload:\n  - DOMAIN-SUFFIX,gr
 mode=--render-only
 build_rule_domains 2> "${tmp}/err" >/dev/null || fail "rule-domain build must not fail on an uncached rule-set"
 
+# A direct rule shadows the same names in every later rule (mihomo takes the
+# first match): cdn.example, tracker*, direct.exact.example and shop.example
+# stay off the lists even though later rule-sets name them, while grok.com
+# stays on because its direct rule comes after the rule-set.
 expected_proxy='domain:bard.google.com
 domain:cat-proxy.example
 domain:grok.com
 domain:openai.com
 domain:speed.example
+domain:video.example
 full:exact-speed.example
 full:exact.example
 full:gemini.google.com
@@ -60,7 +75,7 @@ keyword:claude
 keyword:xai'
 [[ "$(cat "${BASE_DIR}/rule-domains.txt")" == "$expected_proxy" ]] \
     || { diff <(echo "$expected_proxy") "${BASE_DIR}/rule-domains.txt" >&2; fail "proxied rule domains are wrong"; }
-[[ "$(cat "${BASE_DIR}/rule-block.txt")" == "domain:ads.example" ]] || fail "block targets must be listed for DNS refusal"
+[[ "$(cat "${BASE_DIR}/rule-block.txt")" == "domain:ads.example" ]] || fail "block targets must be listed for DNS refusal (and direct must shadow later block rules)"
 grep -q 'not cached' "${tmp}/err" || fail "an uncached remote rule-set must be reported, not fetched, in --render-only"
 
 # The two lists must exist (empty) even without any rules.
