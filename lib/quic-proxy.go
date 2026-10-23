@@ -31,9 +31,17 @@ import (
 
 const (
 	quicVersion1      = 0x00000001
+	quicVersion2      = 0x6b3343cf // RFC 9369
+	quicDraft29       = 0xff00001d // draft-29 … draft-32 share one salt
+	quicDraft32       = 0xff000020
+	quicDraft33       = 0xff000021 // draft-33 and draft-34 already use the v1 salt
+	quicDraft34       = 0xff000022
 	longHeaderForm    = 0x80
-	initialPacketType = 0x00 // bits 4-5 of first byte = 00
+	initialPacketType = 0x00 // bits 4-5 of first byte = 00 (v1 and the drafts)
+	initialPacketV2   = 0x01 // RFC 9369 §3.2 renumbers Initial to 01
 	initialSaltV1     = "\x38\x76\x2c\xf7\xf5\x59\x34\xb3\x4d\x17\x9a\xe6\xa4\xc8\x0c\xad\xcc\xbb\x7f\x0a"
+	initialSaltDraft  = "\xaf\xbf\xec\x28\x99\x93\xd2\x4c\x9e\x97\x86\xf1\x9c\x61\x11\xe0\x43\x90\xa8\x99"
+	initialSaltV2     = "\x0d\xed\xe3\xde\xf7\x00\xa6\xdb\x81\x93\x81\xbe\x6e\x26\x9d\xcb\xf9\xbd\x2e\xd9"
 	tagSize           = 16
 
 	// Resource limits. The listener is reachable from the public Internet and
@@ -224,16 +232,42 @@ func loadLocalIPs() {
 	}
 }
 
+// quicVersionInfo is what differs per QUIC version when decrypting an
+// Initial: the salt the Initial secret is derived from, the HKDF labels and
+// the packet type bits that mark an Initial.
+type quicVersionInfo struct {
+	salt                       string
+	keyLabel, ivLabel, hpLabel string
+	initialType                byte
+}
+
+// versionInfo accepts QUIC v1, v2 and drafts 29–34. The drafts still matter:
+// ByteDance's client stack (TikTok) speaks draft-29 on the public Internet,
+// and a version the proxy does not recognise is dropped before any logging,
+// which looks to the phone like a server that never answers.
+func versionInfo(version uint32) (quicVersionInfo, bool) {
+	switch {
+	case version == quicVersion1, version >= quicDraft33 && version <= quicDraft34:
+		return quicVersionInfo{initialSaltV1, "quic key", "quic iv", "quic hp", initialPacketType}, true
+	case version >= quicDraft29 && version <= quicDraft32:
+		return quicVersionInfo{initialSaltDraft, "quic key", "quic iv", "quic hp", initialPacketType}, true
+	case version == quicVersion2:
+		return quicVersionInfo{initialSaltV2, "quicv2 key", "quicv2 iv", "quicv2 hp", initialPacketV2}, true
+	}
+	return quicVersionInfo{}, false
+}
+
 // looksLikeInitial is the cheap pre-check applied to datagrams from unknown
 // clients before any session state is allocated for them.
 func looksLikeInitial(data []byte) bool {
 	if len(data) < 5 || data[0]&longHeaderForm == 0 {
 		return false
 	}
-	if binary.BigEndian.Uint32(data[1:5]) != quicVersion1 {
+	info, ok := versionInfo(binary.BigEndian.Uint32(data[1:5]))
+	if !ok {
 		return false
 	}
-	return (data[0]&0x30)>>4 == initialPacketType
+	return (data[0]&0x30)>>4 == info.initialType
 }
 
 // openPending registers a new session in the establishing state. It enforces
@@ -801,12 +835,13 @@ func decryptInitialCrypto(data []byte) ([]cryptoFragment, bool) {
 	off += n
 	protected := data[off : off+int(length)]
 
-	// Derive keys
-	initialSecret := hkdfExtract([]byte(initialSaltV1), dcid)
+	// Derive keys (looksLikeInitial already vetted the version)
+	info, _ := versionInfo(binary.BigEndian.Uint32(data[1:5]))
+	initialSecret := hkdfExtract([]byte(info.salt), dcid)
 	clientInitialSecret := hkdfExpandLabel(initialSecret, "client in", nil, 32)
-	key := hkdfExpandLabel(clientInitialSecret, "quic key", nil, 16)
-	iv := hkdfExpandLabel(clientInitialSecret, "quic iv", nil, 12)
-	hp := hkdfExpandLabel(clientInitialSecret, "quic hp", nil, 16)
+	key := hkdfExpandLabel(clientInitialSecret, info.keyLabel, nil, 16)
+	iv := hkdfExpandLabel(clientInitialSecret, info.ivLabel, nil, 12)
+	hp := hkdfExpandLabel(clientInitialSecret, info.hpLabel, nil, 16)
 
 	// Header protection (AES-128-ECB)
 	hpCipher, err := aes.NewCipher(hp)

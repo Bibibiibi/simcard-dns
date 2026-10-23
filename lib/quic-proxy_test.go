@@ -159,17 +159,28 @@ func cryptoFrame(offset uint64, data []byte) []byte {
 // derived from dcid (RFC 9001 §5.2), the inverse of decryptInitialCrypto.
 func buildInitial(t *testing.T, dcid []byte, pn byte, payload []byte) []byte {
 	t.Helper()
+	return buildInitialVersion(t, quicVersion1, dcid, pn, payload)
+}
+
+// buildInitialVersion is buildInitial for any version the proxy accepts
+// (salt, labels and Initial type bits differ per version).
+func buildInitialVersion(t *testing.T, version uint32, dcid []byte, pn byte, payload []byte) []byte {
+	t.Helper()
 	for len(payload) < 64 {
 		payload = append(payload, 0x00) // PADDING so a 16-byte sample exists
 	}
-	initialSecret := hkdfExtract([]byte(initialSaltV1), dcid)
+	info, ok := versionInfo(version)
+	if !ok {
+		t.Fatalf("version %#x is not supported by the proxy", version)
+	}
+	initialSecret := hkdfExtract([]byte(info.salt), dcid)
 	clientSecret := hkdfExpandLabel(initialSecret, "client in", nil, 32)
-	key := hkdfExpandLabel(clientSecret, "quic key", nil, 16)
-	iv := hkdfExpandLabel(clientSecret, "quic iv", nil, 12)
-	hp := hkdfExpandLabel(clientSecret, "quic hp", nil, 16)
+	key := hkdfExpandLabel(clientSecret, info.keyLabel, nil, 16)
+	iv := hkdfExpandLabel(clientSecret, info.ivLabel, nil, 12)
+	hp := hkdfExpandLabel(clientSecret, info.hpLabel, nil, 16)
 
-	header := []byte{0xc0} // long header, Initial, pn length 1
-	header = append(header, 0x00, 0x00, 0x00, 0x01)
+	header := []byte{0xc0 | info.initialType<<4} // long header, Initial, pn length 1
+	header = append(header, byte(version>>24), byte(version>>16), byte(version>>8), byte(version))
 	header = append(header, byte(len(dcid)))
 	header = append(header, dcid...)
 	header = append(header, 0x00)        // scid length
@@ -213,6 +224,37 @@ func TestParseCryptoFramesTreatsPingAsFieldless(t *testing.T) {
 	}
 	if frags[0].offset != 0 || !bytes.Equal(frags[0].data, ch) {
 		t.Fatalf("CRYPTO fragment mismatch: offset=%d len=%d", frags[0].offset, len(frags[0].data))
+	}
+}
+
+// TikTok's client still speaks draft-29; Chrome may offer v2. Both must be
+// decrypted, and anything else must be refused before a session exists.
+func TestExtractSNIAcrossQUICVersions(t *testing.T) {
+	ch := buildClientHello("versioned.example")
+	payload := cryptoFrame(0, ch)
+	for _, version := range []uint32{quicVersion1, quicDraft29, quicDraft32, quicDraft33, quicDraft34, quicVersion2} {
+		packet := buildInitialVersion(t, version, []byte{9, 8, 7, 6, 5, 4, 3, 2}, 0x01, payload)
+		if !looksLikeInitial(packet) {
+			t.Fatalf("version %#x: looksLikeInitial=false", version)
+		}
+		sni, ok := extractSNI(packet)
+		if !ok || sni != "versioned.example" {
+			t.Fatalf("version %#x: extractSNI=%q ok=%v", version, sni, ok)
+		}
+	}
+	// A v2 Initial carries type 01; a v1 packet with those bits is a 0-RTT
+	// packet, not an Initial, and must not be mistaken for one.
+	v2 := buildInitialVersion(t, quicVersion2, []byte{1, 1, 1, 1, 1, 1, 1, 1}, 0x01, payload)
+	v2[1], v2[2], v2[3], v2[4] = 0x00, 0x00, 0x00, 0x01
+	if looksLikeInitial(v2) {
+		t.Fatalf("v1 packet with type bits 01 accepted as Initial")
+	}
+	for _, version := range []uint32{0x00000000, 0xff00001c, 0xff000023, 0x1a2a3a4a} {
+		packet := buildInitialVersion(t, quicVersion1, []byte{2, 2, 2, 2, 2, 2, 2, 2}, 0x01, payload)
+		packet[1], packet[2], packet[3], packet[4] = byte(version>>24), byte(version>>16), byte(version>>8), byte(version)
+		if looksLikeInitial(packet) {
+			t.Fatalf("version %#x must be refused", version)
+		}
 	}
 }
 
