@@ -13,6 +13,7 @@ EXITS_DIR = os.environ.get("EXITS_DIR", "/etc/simcard-dns/exits")
 WG_DIR = os.environ.get("WG_DIR", "/etc/wireguard")
 CACHE_DIR = os.environ.get("PGW_RULESET_CACHE", "/etc/simcard-dns/rulesets")
 POLICY_MAP_FILE = os.environ.get("PGW_POLICY_MAP", "/etc/simcard-dns/policy-map.conf")
+MOSDNS_DIR = os.environ.get("PGW_MOSDNS_DIR", "/etc/mosdns")
 DEFAULT_TARGET = os.environ.get("PGW_DEFAULT_TARGET", "direct")
 INTERVAL = int(os.environ.get("PGW_RULESET_INTERVAL", "86400"))
 GEOSITE_MRS = "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/%s.mrs"
@@ -23,6 +24,21 @@ DOMAIN_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9_-]*[A-Za-z0-9])?(?:\.[A-Za-z0
 def die(message):
     sys.stderr.write(message.rstrip() + "\n")
     raise SystemExit(1)
+
+
+def remote_nameservers():
+    """The gateway's international resolvers, from the same file mosdns reads."""
+    servers = []
+    try:
+        with open(os.path.join(MOSDNS_DIR, ".remote_dns"), encoding="utf-8") as handle:
+            for token in handle.read().split():
+                try:
+                    servers.append(str(ipaddress.ip_address(token)))
+                except ValueError:
+                    pass
+    except OSError:
+        pass
+    return servers or ["1.1.1.1", "8.8.8.8"]
 
 
 def load_policy_map():
@@ -175,6 +191,11 @@ def main():
     providers, rules = {}, []
     policy_map = load_policy_map()
     final = "DIRECT"
+    local_dns_keys = []  # nameserver-policy keys that keep the system resolver
+
+    def is_local(policy):
+        raw = policy.strip()
+        return raw.lower() == "local" or policy_map.get(raw, "").strip().lower() == "local"
 
     def target(policy):
         raw = policy.strip()
@@ -255,6 +276,7 @@ def main():
                 cached = cache_content(content, ".json")
                 providers[tag] = {"type": "file", "behavior": "classical", "format": "yaml", "path": cached}
         rules.append("RULE-SET,%s,%s" % (tag, policy))
+        return tag
 
     with open(rules_path, encoding="utf-8") as handle:
         for line_number, raw in enumerate(handle, 1):
@@ -271,22 +293,45 @@ def main():
             if len(parts) < 3:
                 die("line %d: rule needs <type>,<value>,<policy>" % line_number)
             value, policy = parts[1], target(parts[2])
+            # Domains that leave through this host's own address keep the
+            # host resolver (DNS-based unblocking services hijack them on
+            # purpose); everything else must not see those answers.
+            local_key = is_local(parts[2])
             if kind in ("DOMAIN", "DOMAIN-SUFFIX", "DOMAIN-KEYWORD", "IP-CIDR", "IP-CIDR6"):
                 rules.append("%s,%s,%s" % (kind, value, policy))
+                if local_key and kind == "DOMAIN":
+                    local_dns_keys.append(value.lower())
+                elif local_key and kind == "DOMAIN-SUFFIX":
+                    local_dns_keys.append("+." + value.lower())
             elif kind == "GEOSITE":
                 tag = "geosite_" + re.sub(r"[^a-z0-9_-]", "", value.lower())
                 add_mrs(tag, GEOSITE_MRS % value.lower(), "domain")
                 rules.append("RULE-SET,%s,%s" % (tag, policy))
+                if local_key:
+                    local_dns_keys.append("rule-set:" + tag)
             elif kind == "GEOIP":
                 tag = "geoip_" + re.sub(r"[^a-z0-9_-]", "", value.lower())
                 add_mrs(tag, GEOIP_MRS % value.lower(), "ipcidr")
                 rules.append("RULE-SET,%s,%s" % (tag, policy))
             elif kind in ("RULE-SET", "RULESET"):
-                add_ruleset(value, policy)
+                tag = add_ruleset(value, policy)
+                if local_key and providers[tag]["behavior"] != "ipcidr":
+                    local_dns_keys.append("rule-set:" + tag)
             else:
                 die("line %d: unsupported rule type '%s'" % (line_number, parts[0]))
     rules.append("MATCH,%s" % final)
-    config = {"mode": "rule", "log-level": "warning", "ipv6": False, "find-process-mode": "off",
+    # mihomo resolves UDP destinations (and sniffed hostnames when the exit
+    # cannot carry a name) on this host. Left to the system resolver, a
+    # DNS-based unblocking service answers with its own private proxy
+    # address, which a remote exit then cannot reach: QUIC through such an
+    # exit dies silently while TCP, resolved remotely, works. Resolve with
+    # the gateway's international DNS instead and keep the system resolver
+    # only for domains routed through the local exit.
+    dns = {"enable": True, "ipv6": False, "prefer-h3": False, "use-hosts": False, "use-system-hosts": False,
+           "nameserver": remote_nameservers()}
+    if local_dns_keys:
+        dns["nameserver-policy"] = {key: ["system"] for key in dict.fromkeys(local_dns_keys)}
+    config = {"mode": "rule", "log-level": "warning", "ipv6": False, "find-process-mode": "off", "dns": dns,
               "tun": {"enable": True, "stack": os.environ.get("MIHOMO_STACK", "gvisor"),
                       "device": "pgw-smart", "auto-route": False, "auto-redirect": False,
                       "strict-route": False, "mtu": mtu},

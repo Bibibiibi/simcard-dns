@@ -71,6 +71,8 @@ sudo /opt/simcard-dns/bin/simcard-dns --add-rule 'DOMAIN-SUFFIX,gvt1.com,direct'
 
 规则按顺序匹配，第一条命中的生效（与 mihomo 一致），DNS 名单也照这个顺序：排在前面的 `direct` 规则会把它覆盖的域名从后面的规则集里去掉，排在后面的则不影响前面已命中的规则。
 
+出口层解析域名的方式：走节点出口的 TCP 由节点那端解析；UDP（QUIC）和走 `local` 的流量在本机解析。本机解析时，smart 引擎用的是「国际 DNS」（`--set-dns` 的第一组），只有目标为 `local` 的规则域名才用系统 DNS。这样系统 DNS 若是 AKDNS 之类的解锁 DNS，解锁只作用于 `local` 的域名；走节点的域名不会被解析成解锁服务的内网地址（否则 QUIC 会在节点那端石沉大海，表现为应用先卡一阵再退回 TCP）。
+
 规则类型：`DOMAIN`、`DOMAIN-SUFFIX`、`DOMAIN-KEYWORD`、`IP-CIDR`、`GEOSITE`、`GEOIP`、`RULE-SET`、`FINAL`。
 
 `RULE-SET` 支持 mihomo `.mrs`、Clash YAML 和纯文本列表（不支持旧 sing-box `.srs`）。类型按文件名自动推断，命名不明确时可在 URL 后加 `#domain` / `#ipcidr` / `#classical`。远程规则集由 mihomo 默认每 24 小时更新。

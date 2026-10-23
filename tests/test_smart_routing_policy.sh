@@ -22,17 +22,38 @@ RULE-SET,https://example.com/remote.list,us
 RULE-SET,https://example.com/ambiguous.yaml#domain,us
 GEOSITE,telegram,us
 GEOIP,cn,direct
+DOMAIN-SUFFIX,youtube.com,local
+DOMAIN,yt.example,Unblock
+RULE-SET,https://example.com/youtube.yaml,local
+RULE-SET,https://example.com/cn-ip.mrs#ipcidr,local
+GEOSITE,youtube,local
 FINAL,block
 R
-out="$(EXITS_DIR="${tmp}/exits" WG_DIR="${tmp}/wg" PGW_RULESET_CACHE="${tmp}/rs" python3 "${gen}" "${tmp}/rules.conf")"
+mkdir -p "${tmp}/mosdns"; printf '9.9.9.9 1.0.0.1 not-an-ip\n' > "${tmp}/mosdns/.remote_dns"
+printf 'Unblock=local\n' > "${tmp}/policy-map.conf"
+out="$(EXITS_DIR="${tmp}/exits" WG_DIR="${tmp}/wg" PGW_RULESET_CACHE="${tmp}/rs" PGW_MOSDNS_DIR="${tmp}/mosdns" PGW_POLICY_MAP="${tmp}/policy-map.conf" python3 "${gen}" "${tmp}/rules.conf")"
 python3 - "$out" <<'PY'
-import json, sys
+import hashlib, json, sys
 c = json.loads(sys.argv[1])
+# UDP targets are resolved on the gateway: use its international DNS, and the
+# system resolver (DNS-based unblocking) only for domains leaving via local.
+dns = c["dns"]
+assert dns["enable"] is True and dns["ipv6"] is False
+assert dns["nameserver"] == ["9.9.9.9", "1.0.0.1"], dns["nameserver"]
+def tag(url):
+    return "rs_" + hashlib.sha256(url.encode()).hexdigest()[:12]
+policy = dns["nameserver-policy"]
+assert policy["+.youtube.com"] == ["system"] and policy["yt.example"] == ["system"], policy
+assert policy["rule-set:" + tag("https://example.com/youtube.yaml")] == ["system"], policy
+assert policy["rule-set:geosite_youtube"] == ["system"], policy
+assert "rule-set:" + tag("https://example.com/cn-ip.mrs") not in policy, "ip rule-sets are not DNS keys"
+assert not any(k in ("+.google.com", "rule-set:geosite_telegram", "rule-set:" + tag("https://example.com/remote.list")) for k in policy), policy
 assert [p["name"] for p in c["proxies"]] == ["us"]
 assert c["tun"]["device"] == "pgw-smart" and c["tun"]["auto-route"] is False
 assert c["sniffer"]["enable"] and c["sniffer"]["override-destination"]
 assert c["rules"][0] == "DOMAIN-SUFFIX,google.com,us", "order not preserved"
 assert c["rules"][-1] == "MATCH,REJECT"
+assert "DOMAIN-SUFFIX,youtube.com,DIRECT" in c["rules"] and "DOMAIN,yt.example,DIRECT" in c["rules"]
 providers = c["rule-providers"]
 assert any(k.startswith("geosite_") and v["format"] == "mrs" and v["behavior"] == "domain" for k,v in providers.items())
 assert any(k.startswith("geoip_") and v["format"] == "mrs" and v["behavior"] == "ipcidr" for k,v in providers.items())
